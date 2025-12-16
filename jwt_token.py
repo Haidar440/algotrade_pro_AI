@@ -5,7 +5,7 @@ import pyotp
 api_key = "", ""
 client_id = ""
 password = ""
-totp_key = "" # From Google Authenticator Setup
+totp_key = "    " # From Google Authenticator Setup
 
 # Generate
 obj = SmartConnect(api_key=api_key)

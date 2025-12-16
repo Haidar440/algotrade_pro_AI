@@ -225,6 +225,7 @@ export class TechnicalAnalysisEngine {
     const prev = candles[candles.length - 2];
     const price = curr.close;
     const dateStr = curr.date.split('T')[0]; // Handle ISO strings
+    const previousClose = prev.close;
 
     // 2. 📅 Holiday Check
     // If the latest candle is from a holiday (data error) or today is holiday, we might warn
@@ -430,11 +431,12 @@ export class TechnicalAnalysisEngine {
         : "No high-probability setup detected."
     };
 
-    return {
+  return {
       symbol,
       timeframe: "Daily",
       market_condition: condition,
       current_price: price,
+      previous_close: previousClose,
       data_timestamp: curr.date,
       technicals,
       strategies_evaluated: strategies,
@@ -450,6 +452,7 @@ export class TechnicalAnalysisEngine {
           timeframe: "Daily",
           market_condition: 'RANGE-BOUND',
           current_price: curr.close,
+          previous_close: curr.close,
           data_timestamp: curr.date,
           technicals: {
               rsi: 0, adx: 0, macd: 'BEARISH', ema_20: 0, ema_50: 0, ema_200: 0,

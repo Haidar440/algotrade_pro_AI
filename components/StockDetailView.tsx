@@ -31,19 +31,21 @@ const StockDetailView: React.FC<StockDetailViewProps> = ({
   const [editPriceVal, setEditPriceVal] = useState(livePrice.toString());
   const inputRef = useRef<HTMLInputElement>(null);
   
-  // ✅ AI State
+  // AI State
   const [aiPrediction, setAiPrediction] = useState<AIPrediction | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
 
-  // ✅ Trade Modal State
+  // Trade Modal State
   const [showTradeModal, setShowTradeModal] = useState(false);
 
   useEffect(() => { if (!isEditingPrice) setEditPriceVal(livePrice.toString()); }, [livePrice, isEditingPrice]);
   useEffect(() => { if (isEditingPrice && inputRef.current) inputRef.current.focus(); }, [isEditingPrice]);
 
-  const change = livePrice - result.current_price;
-  const changePercent = (change / result.current_price) * 100;
-  const isPositive = changePercent >= 0;
+  // ✅ FIXED CALCULATION: Use Previous Close
+  const previousClose = result.previous_close || result.current_price;
+  const change = livePrice - previousClose;
+  const changePercent = (change / previousClose) * 100;
+  const isPositive = change >= 0;
 
   const handlePriceSubmit = () => {
       const val = parseFloat(editPriceVal);
@@ -52,7 +54,6 @@ const StockDetailView: React.FC<StockDetailViewProps> = ({
   };
 
   const handleGenerateAI = async () => {
-    // If we have Angel connected, use real historical data, else rely on the snapshot
     setAiLoading(true);
     try {
       let historyStr = "";
@@ -195,7 +196,7 @@ const StockDetailView: React.FC<StockDetailViewProps> = ({
             onPaperTrade={onPaperTrade} 
           />
           
-          {/* ✅ REAL TRADE BUTTON (Shows only if Connected) */}
+          {/* ✅ REAL TRADE BUTTON */}
           {brokerState.angel?.jwtToken ? (
             <button 
               onClick={() => setShowTradeModal(true)}
@@ -217,11 +218,20 @@ const StockDetailView: React.FC<StockDetailViewProps> = ({
       {/* 5. Strategy Breakdown */}
       <div>
          <h3 className="text-xl font-bold text-white mb-4">Strategy Matrix</h3>
-         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {result.strategies_evaluated.map((strat, idx) => (
-               <StrategyCard key={idx} strategy={strat} />
-            ))}
-         </div>
+         
+         {result.strategies_evaluated.length === 0 ? (
+           <div className="p-8 rounded-xl border border-rose-500/30 bg-rose-500/10 text-center">
+              <AlertTriangle className="w-10 h-10 text-rose-500 mx-auto mb-3" />
+              <h4 className="text-lg font-bold text-rose-200">Analysis Blocked</h4>
+              <p className="text-rose-400 mt-1">{result.primary_recommendation.reason}</p>
+           </div>
+         ) : (
+           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {result.strategies_evaluated.map((strat, idx) => (
+                 <StrategyCard key={idx} strategy={strat} />
+              ))}
+           </div>
+         )}
       </div>
 
       <div className="flex items-start gap-2 p-4 rounded-lg bg-slate-800/50 border border-slate-700 text-xs text-slate-400">
@@ -229,13 +239,13 @@ const StockDetailView: React.FC<StockDetailViewProps> = ({
           <p>{result.disclaimer}</p>
       </div>
 
-      {/* ✅ Trade Modal Popup */}
+      {/* Trade Modal Popup */}
       <TradeModal 
-         isOpen={showTradeModal} 
-         onClose={() => setShowTradeModal(false)}
-         symbol={result.symbol}
-         ltp={livePrice}
-         brokerState={brokerState}
+          isOpen={showTradeModal} 
+          onClose={() => setShowTradeModal(false)}
+          symbol={result.symbol}
+          ltp={livePrice}
+          brokerState={brokerState}
       />
     </div>
   );

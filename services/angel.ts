@@ -1,6 +1,14 @@
 import axios from 'axios';
 import * as OTPAuth from "otpauth"; 
-import { AngelOrderParams, AngelOrder, AngelPosition, AngelHolding, AngelFundDetails } from '../types';
+import { 
+  AngelCredentials, 
+  AngelOrderParams, 
+  AngelOrder, 
+  AngelPosition, 
+  AngelHolding, 
+  AngelFundDetails,
+  ModifyOrderParams 
+} from '../types';
 
 // ✅ POINT TO YOUR LOCAL BACKEND
 const BACKEND_URL = 'http://localhost:5000';
@@ -49,12 +57,12 @@ export class AngelOne {
         } catch (error: any) {
           const errorCode = error.response?.data?.errorcode;
           if (errorCode === 'AG8002' || error.response?.status === 401 || error.response?.status === 403) {
-             console.log("⚠️ Token Expired. Refreshing...");
-             try {
+              console.log("⚠️ Token Expired. Refreshing...");
+              try {
                 await this.renewAccessToken();
                 const retryResult = await requestFn();
                 resolve(retryResult);
-             } catch (refreshError) { reject(refreshError); }
+              } catch (refreshError) { reject(refreshError); }
           } else { reject(error); }
         }
       });
@@ -92,7 +100,10 @@ export class AngelOne {
     throw new Error(response.data.message || "Login Failed");
   }
 
-  async renewAccessToken() { /* Logic for token refresh if needed later */ }
+  async renewAccessToken() { 
+      // Placeholder: Implement full refresh logic if needed
+      console.log("Token renewal requested");
+  }
 
   private updateSession(data: any) {
     this.jwtToken = data.jwtToken;
@@ -101,53 +112,47 @@ export class AngelOne {
     if (this.onSessionUpdate) this.onSessionUpdate(data);
   }
 
-  // --- 4. TOKEN LOOKUP (CRITICAL FOR WEBSOCKETS) ---
+  // --- 4. TOKEN LOOKUP ---
   async searchSymbolToken(symbol: string): Promise<string> {
     const cleanSymbol = symbol.toUpperCase().replace('.NS', '').replace('-EQ', '');
-    
-    // 1. Check Cache
     if (this.tokenCache.has(cleanSymbol)) return this.tokenCache.get(cleanSymbol)!;
 
     return this.enqueueRequest(async () => {
-        // 2. Try Angel One API Search
         try {
-            if (this.jwtToken) {
-                const response = await this.callProxy('searchScrip', { exchange: "NSE", searchscrip: cleanSymbol });
-                if (response.data.status && response.data.data) {
-                    const match = response.data.data.find((s: any) => s.tradingsymbol === `${cleanSymbol}-EQ`) || response.data.data[0];
-                    if (match) {
-                        this.tokenCache.set(cleanSymbol, match.symboltoken);
-                        return match.symboltoken;
-                    }
-                }
+            // Priority 1: Backend Search (Faster)
+            const res = await axios.get(`${BACKEND_URL}/api/search?q=${cleanSymbol}`);
+            if (res.data.length > 0) {
+                const match = res.data.find((s: any) => s.symbol === cleanSymbol) || res.data[0];
+                this.tokenCache.set(cleanSymbol, match.token);
+                return match.token;
             }
         } catch (e) { }
-
-        // 3. Fallback to Local DB (market.db)
-        try {
-            const res = await axios.get(`${BACKEND_URL}/api/get-token?symbol=${cleanSymbol}`);
-            if (res.data.status && res.data.token) {
-                this.tokenCache.set(cleanSymbol, res.data.token);
-                return res.data.token;
-            }
-        } catch (e) {}
         
+        // Priority 2: Angel API Fallback
+        try {
+            const response = await this.callProxy('searchScrip', { exchange: "NSE", searchscrip: cleanSymbol });
+            if (response.data.status && response.data.data) {
+                const match = response.data.data.find((s: any) => s.tradingsymbol === `${cleanSymbol}-EQ`) || response.data.data[0];
+                if (match) {
+                    this.tokenCache.set(cleanSymbol, match.symboltoken);
+                    return match.symboltoken;
+                }
+            }
+        } catch(e) {}
+
         throw new Error(`Token not found for: ${symbol}`);
     });
-  }
-  
-  // Alias for compatibility
-  async resolveToken(symbol: string): Promise<string> {
-      return this.searchSymbolToken(symbol);
   }
 
   // --- 5. MARKET DATA ---
   async getHistoricalData(symbol: string, interval: string = "ONE_DAY", days: number = 200): Promise<any[]> {
     let token = "";
     try { token = await this.searchSymbolToken(symbol); } catch (e) { return []; }
+    
     const toDate = new Date();
     const fromDate = new Date();
     fromDate.setDate(toDate.getDate() - days);
+    
     const formatDate = (date: Date) => {
         const yyyy = date.getFullYear();
         const mm = String(date.getMonth() + 1).padStart(2, '0');
@@ -156,6 +161,7 @@ export class AngelOne {
         const min = String(date.getMinutes()).padStart(2, '0');
         return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
     };
+
     return this.enqueueRequest(async () => {
         const response = await this.callProxy('getCandleData', {
             exchange: "NSE", symboltoken: token, interval: interval, fromdate: formatDate(fromDate), todate: formatDate(toDate)
@@ -167,25 +173,48 @@ export class AngelOne {
     });
   }
 
-  // --- 6. EXECUTION & PORTFOLIO ---
+  // --- 6. EXECUTION & PORTFOLIO (ENHANCED) ---
 
-  // Place Order
-  async placeOrder(params: AngelOrderParams): Promise<{ orderid: string }> {
+  // ✅ Place Order (Returns Detailed Status)
+  async placeOrder(params: AngelOrderParams): Promise<{ status: boolean; message: string; orderid?: string }> {
       return this.enqueueRequest(async () => {
-          const response = await this.callProxy('placeOrder', params);
-          if (response.data.status) {
-              return { orderid: response.data.data.orderid };
+          try {
+              const response = await this.callProxy('placeOrder', params);
+              if (response.data.status) {
+                  return { status: true, message: 'Success', orderid: response.data.data.uniqueorderid || response.data.data.orderid };
+              }
+              return { status: false, message: response.data.message || 'Order Failed' };
+          } catch (e: any) {
+              return { status: false, message: e.message || 'API Error' };
           }
-          throw new Error(response.data.message || "Order Placement Failed");
       });
   }
 
-  // Cancel Order
-  async cancelOrder(orderId: string, variety: string = 'NORMAL'): Promise<boolean> {
+  // ✅ Modify Order (New - For Trailing SL)
+  async modifyOrder(params: ModifyOrderParams): Promise<{ status: boolean; message: string }> {
       return this.enqueueRequest(async () => {
-          const response = await this.callProxy('cancelOrder', { variety, orderid: orderId });
-          if (response.data.status) return true;
-          throw new Error(response.data.message || "Cancel Failed");
+          try {
+              const response = await this.callProxy('modifyOrder', params);
+              if (response.data.status) {
+                  return { status: true, message: 'Modified' };
+              }
+              return { status: false, message: response.data.message };
+          } catch (e: any) {
+              return { status: false, message: e.message };
+          }
+      });
+  }
+
+  // ✅ Cancel Order (Enhanced)
+  async cancelOrder(orderId: string, variety: string = 'NORMAL'): Promise<{ status: boolean; message: string }> {
+      return this.enqueueRequest(async () => {
+          try {
+              const response = await this.callProxy('cancelOrder', { variety, orderid: orderId });
+              if (response.data.status) return { status: true, message: 'Cancelled' };
+              return { status: false, message: response.data.message };
+          } catch (e: any) {
+              return { status: false, message: e.message };
+          }
       });
   }
 
@@ -225,7 +254,7 @@ export class AngelOne {
       });
   }
   
-  // Market Indices (Needed for App.tsx)
+  // Market Indices
   async getMarketIndices() {
       try {
           const nifty = await this.getLtpValue("NSE", "99926000", "Nifty 50");

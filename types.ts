@@ -1,16 +1,29 @@
 // --- DOMAIN ENTITIES ---
-
+export interface Trade {
+  _id?: string;        // MongoDB ID (optional because new trades won't have it yet)
+  symbol: string;
+  entryPrice: number;
+  quantity: number;
+  type: 'SWING' | 'INTRADAY';
+  status: 'OPEN' | 'CLOSED';
+  entryDate: string;   // Dates usually come as strings from API
+  exitDate?: string;
+  exitPrice?: number;
+  pnl?: number;
+  strategy?: string;
+  notes?: string;
+}
 // Split PORTFOLIO into REAL_PORTFOLIO and PAPER_TRADING
 export type View = 
   | 'SCANNER' 
   | 'WATCHLIST' 
-  | 'REAL_PORTFOLIO'  // ✅ New: Angel One Native UI
-  | 'PAPER_TRADING'   // ✅ New: Practice Dashboard
+  | 'REAL_PORTFOLIO' 
+  | 'PAPER_TRADING' 
+  | 'AUTO_TRADER'  // ✅ NEW
   | 'BACKTEST' 
   | 'STRATEGIES' 
   | 'PYTHON_LAB' 
   | 'NEWS';
-
 export interface Stock {
   symbol: string;
   name: string;
@@ -70,6 +83,7 @@ export interface AnalysisResult {
   timeframe: string;
   market_condition: 'UPTREND' | 'DOWNTREND' | 'RANGE-BOUND';
   current_price: number;
+  previous_close: number; // ✅ NEW FIELD
   data_timestamp: string;
   technicals: Technicals;
   strategies_evaluated: StrategyEvaluation[];
@@ -77,9 +91,6 @@ export interface AnalysisResult {
   disclaimer: string;
   groundingUrls?: string[];
 }
-
-// --- BROKER CREDENTIALS (Updated for Angel Logic) ---
-
 export interface AngelCredentials {
   clientCode: string;   // ✅ Required
   jwtToken: string;
@@ -166,14 +177,34 @@ export interface AngelOrderParams {
   tradingsymbol: string;
   symboltoken: string;
   transactiontype: 'BUY' | 'SELL';
-  exchange: 'NSE' | 'BSE';
+  exchange: 'NSE' | 'BSE' | 'NFO'; // Added NFO
   ordertype: 'MARKET' | 'LIMIT' | 'STOPLOSS_LIMIT' | 'STOPLOSS_MARKET';
-  producttype: 'INTRADAY' | 'CARRYFORWARD' | 'DELIVERY' | 'MARGIN' | 'BO'; // Adjusted for API compat
+  producttype: 'INTRADAY' | 'CARRYFORWARD' | 'DELIVERY' | 'MARGIN' | 'BO';
   duration: 'DAY' | 'IOC';
   price: string;
-  squareoff?: string;
-  stoploss?: string;
   quantity: string;
+  
+  // SmartAPI Specific Fields
+  triggerprice?: string; // Required for STOPLOSS
+  squareoff?: string;    // Required for ROBO (Target)
+  stoploss?: string;     // Required for ROBO (SL)
+  trailingStopLoss?: string; // Optional for ROBO
+  
+  orderid?: string;      // Required for Modify/Cancel
+}
+
+export interface ModifyOrderParams {
+  variety: 'NORMAL' | 'STOPLOSS' | 'AMO' | 'ROBO';
+  orderid: string;
+  ordertype: string;
+  producttype: string;
+  duration: string;
+  price: string;
+  quantity: string;
+  tradingsymbol: string;
+  symboltoken: string;
+  exchange: string;
+  triggerprice?: string; // Crucial for Trailing SL
 }
 
 export interface AngelOrder {
