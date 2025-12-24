@@ -87,7 +87,7 @@ export const getGeminiPrediction = async (
 
   try {
     const response = await genAI.models.generateContent({
-      model: "gemini-2.5-flash-lite", // ✅ Powerful Model
+      model: "gemini-3-flash-preview", // ✅ Powerful Model
       contents: prompt
     });
 
@@ -131,7 +131,7 @@ export const analyzeStockTicker = async (ticker: string): Promise<AnalysisResult
 
   try {
     const response = await genAI.models.generateContent({
-      model: "gemini-2.5-flash-lite", // ✅ Powerful Model
+      model: "gemini-3-flash-preview", // ✅ Powerful Model
       contents: `
         Analyze ${ticker} (Daily Timeframe).
         Find EMA (9,20,50,200), RSI, MACD, Bollinger Bands.
@@ -207,7 +207,7 @@ export const analyzeStockNews = async (query: string): Promise<NewsAnalysisResul
 
   try {
     const response = await genAI.models.generateContent({
-      model: "gemini-2.5-flash-lite", // ✅ Powerful Model
+      model: "gemini-2.5-flash", // ✅ Powerful Model
       contents: `Find and analyze the latest news for: "${query}". Focus on Indian Market impact.`,
       config: { 
         tools: [{ googleSearch: {} }], 
@@ -253,7 +253,7 @@ export const fetchMarketIndices = async (): Promise<MarketIndices> => {
 
   try {
     const response = await genAI.models.generateContent({
-      model: "gemini-2.5-flash-lite", // ✅ Powerful Model
+      model: "gemini-3-flash-preview", // ✅ Powerful Model
       contents: "Return JSON: { nifty: {price, changePercent}, sensex: {price, changePercent}, bankNifty: {price, changePercent} } for latest live Indian market values.",
       config: { tools: [{ googleSearch: {} }] },
     });

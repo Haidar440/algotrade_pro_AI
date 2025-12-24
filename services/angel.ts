@@ -100,11 +100,21 @@ export class AngelOne {
     throw new Error(response.data.message || "Login Failed");
   }
 
-  async renewAccessToken() { 
-      // Placeholder: Implement full refresh logic if needed
-      console.log("Token renewal requested");
-  }
+  // Inside algotrade-pro1/services/angel.ts
 
+async renewAccessToken() {
+    if (!this.refreshToken) throw new Error("No Refresh Token available");
+    
+    console.log("🔄 Attempting Token Refresh...");
+    const response = await this.callProxy('generateTokens', { refreshToken: this.refreshToken });
+    
+    if (response.data.status && response.data.data) {
+        console.log("✅ Token Refreshed!");
+        this.updateSession(response.data.data);
+    } else {
+        throw new Error("Token Refresh Failed");
+    }
+}
   private updateSession(data: any) {
     this.jwtToken = data.jwtToken;
     this.refreshToken = data.refreshToken;
@@ -144,10 +154,16 @@ export class AngelOne {
     });
   }
 
-  // --- 5. MARKET DATA ---
+
+ // --- 5. MARKET DATA ---
   async getHistoricalData(symbol: string, interval: string = "ONE_DAY", days: number = 200): Promise<any[]> {
     let token = "";
-    try { token = await this.searchSymbolToken(symbol); } catch (e) { return []; }
+    try { 
+        token = await this.searchSymbolToken(symbol); 
+    } catch (e) { 
+        console.warn(`⚠️ Token Lookup Failed for ${symbol}`);
+        return []; 
+    }
     
     const toDate = new Date();
     const fromDate = new Date();
@@ -163,16 +179,33 @@ export class AngelOne {
     };
 
     return this.enqueueRequest(async () => {
-        const response = await this.callProxy('getCandleData', {
-            exchange: "NSE", symboltoken: token, interval: interval, fromdate: formatDate(fromDate), todate: formatDate(toDate)
-        });
-        if (response.data.status && response.data.data) {
-            return response.data.data.map((d: any) => ({ date: d[0], open: d[1], high: d[2], low: d[3], close: d[4], volume: d[5] }));
+        try {
+            const response = await this.callProxy('getCandleData', {
+                exchange: "NSE", 
+                symboltoken: token, 
+                interval: interval, 
+                fromdate: formatDate(fromDate), 
+                todate: formatDate(toDate)
+            });
+
+            // ✅ LOG THE ERROR if status is false
+            if (response.data.status === false) {
+                console.error(`❌ API Error for ${symbol} (Token: ${token}):`, response.data.message);
+                return [];
+            }
+
+            if (response.data.data) {
+                return response.data.data.map((d: any) => ({ 
+                    date: d[0], open: d[1], high: d[2], low: d[3], close: d[4], volume: d[5] 
+                }));
+            }
+            return [];
+        } catch (e: any) {
+            console.error(`❌ Request Failed for ${symbol}:`, e.message);
+            return [];
         }
-        return [];
     });
   }
-
   // --- 6. EXECUTION & PORTFOLIO (ENHANCED) ---
 
   // ✅ Place Order (Returns Detailed Status)

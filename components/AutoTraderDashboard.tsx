@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { AutoTrader, AutoTraderConfig } from '../services/autoTrader';
 import { AngelOne } from '../services/angel';
 import { BrokerState } from '../types';
-import { StockSelector } from '../services/stockSelection'; // ✅ IMPORT THIS
 import { 
   Play, Square, Settings, Activity, Terminal, 
   Shield, Search, RefreshCw 
@@ -10,21 +9,17 @@ import {
 
 interface Props {
   brokerState: BrokerState;
+  existingTrader: AutoTrader | null; 
 }
 
-const AutoTraderDashboard: React.FC<Props> = ({ brokerState }) => {
-  const [trader, setTrader] = useState<AutoTrader | null>(null);
+const AutoTraderDashboard: React.FC<Props> = ({ brokerState, existingTrader }) => {
   const [isRunning, setIsRunning] = useState(false);
-  const [isScanning, setIsScanning] = useState(false); // ✅ SCAN STATE
+  const [isScanning, setIsScanning] = useState(false); // UI State
   
   const [config, setConfig] = useState<AutoTraderConfig>({
-    capital: 50000,
-    riskPerTrade: 1, 
-    maxDailyLoss: 2000,
-    targetMultiplier: 2,
-    enableTrailingSL: true,
-    symbols: ['SBIN', 'RELIANCE', 'INFY', 'TATASTEEL'], // Default
-    maxOpenPositions: 3 
+    capital: 50000, riskPerTrade: 1, maxDailyLoss: 2000,
+    targetMultiplier: 2, enableTrailingSL: true,
+    symbols: ['SBIN', 'RELIANCE'], maxOpenPositions: 3
   });
 
   const [logs, setLogs] = useState<string[]>([]);
@@ -32,82 +27,68 @@ const AutoTraderDashboard: React.FC<Props> = ({ brokerState }) => {
   const [dailyPnL, setDailyPnL] = useState(0);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
-  // --- INIT TRADER ---
+  // --- 1. CONNECT & SYNC ---
   useEffect(() => {
-    if (brokerState.angel && !trader) {
-      const angel = new AngelOne(brokerState.angel);
-      const newTrader = new AutoTrader(
-        angel, config, 
+    if (existingTrader) {
+      const snapshot = existingTrader.getSnapshot();
+      setIsRunning(snapshot.isRunning);
+      setIsScanning(snapshot.isScanning); // ✅ Sync Scanning State
+      setActiveTrades(snapshot.activeTrades);
+      setDailyPnL(snapshot.dailyPnL);
+      setLogs(snapshot.logs);
+      setConfig(snapshot.config);
+
+      existingTrader.setCallbacks(
         (status) => {
            setIsRunning(status.isRunning);
+           setIsScanning(status.isScanning); // ✅ Listen for updates
            setActiveTrades(status.activeTrades);
            setDailyPnL(status.dailyPnL);
         },
         (msg) => setLogs(prev => [...prev.slice(-49), msg])
       );
-      setTrader(newTrader);
     }
-  }, [brokerState]);
+  }, [existingTrader]);
 
-  // --- POLLING ENGINE ---
+  // --- 2. POLLING ENGINE ---
   useEffect(() => {
-    if (!isRunning || !trader || !brokerState.angel) return;
+    if (!isRunning || !existingTrader || !brokerState.angel) return;
     const angel = new AngelOne(brokerState.angel);
-    setLogs(prev => [...prev, `[System] Starting Active Market Poll...`]);
-
+    
     const intervalId = setInterval(async () => {
-        for (const sym of config.symbols) {
+        const symbolsToPoll = new Set([
+            ...config.symbols, 
+            ...activeTrades.map(t => t.symbol)
+        ]);
+
+        for (const sym of symbolsToPoll) {
             try {
                 const token = await angel.searchSymbolToken(sym);
                 if (token) {
                     const ltpData = await angel.getLtpValue("NSE", token, sym);
                     if (ltpData && ltpData.price > 0) {
-                        trader.processTick(sym, ltpData.price);
+                        existingTrader.processTick(sym, ltpData.price);
                     }
                 }
             } catch (e) {}
         }
     }, 3000); 
 
-    return () => { clearInterval(intervalId); setLogs(prev => [...prev, `[System] Polling Stopped.`]); };
-  }, [isRunning, config.symbols]); 
+    return () => clearInterval(intervalId);
+  }, [isRunning, config.symbols, activeTrades]);
 
-  // --- ⚡ AUTO-SCANNER FUNCTION ---
-  const handleAutoScan = async () => {
-    if (!brokerState.angel) return;
-    setIsScanning(true);
-    setLogs(prev => [...prev, `[Scanner] 🚀 Starting Market Scan (This takes ~30s)...`]);
-    
-    try {
-        const angel = new AngelOne(brokerState.angel);
-        // Run the Stock Selector
-        const candidates = await StockSelector.scanUniverse(angel, (msg) => {
-            setLogs(prev => [...prev, `[Scanner] ${msg}`]);
-        });
-
-        if (candidates.length > 0) {
-            // Take Top 5 Stocks
-            const bestPicks = candidates.slice(0, 5).map(c => c.symbol);
-            
-            // ✅ AUTO-UPDATE CONFIG
-            setConfig(prev => ({ ...prev, symbols: bestPicks }));
-            if(trader) trader.updateConfig({ ...config, symbols: bestPicks });
-
-            setLogs(prev => [...prev, `[Scanner] ✅ Watchlist Updated: ${bestPicks.join(', ')}`]);
-        } else {
-            setLogs(prev => [...prev, `[Scanner] ⚠️ No valid Swing Candidates found.`]);
-        }
-    } catch(e) {
-        setLogs(prev => [...prev, `[Scanner] ❌ Error: ${e}`]);
-    } finally {
-        setIsScanning(false);
+  // --- 3. ACTIONS ---
+  // ✅ Simplified: Just tell the bot to run the scanner
+  const handleAutoScan = () => {
+    if (existingTrader && !isScanning) {
+        existingTrader.runScanner();
     }
   };
 
-  useEffect(() => { logsEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [logs]);
+  const handleStart = () => { if (existingTrader) { existingTrader.updateConfig(config); existingTrader.start(); } };
+  const handleStop = () => { if (existingTrader) existingTrader.stop(); };
 
-  const handleStart = () => { if (trader) { trader.updateConfig(config); trader.start(); } };
-  const handleStop = () => { if (trader) trader.stop(); };
+  useEffect(() => { logsEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [logs]);
 
   if (!brokerState.angel) return <div className="p-10 text-center text-slate-500">Connect Angel One first.</div>;
 
@@ -158,10 +139,9 @@ const AutoTraderDashboard: React.FC<Props> = ({ brokerState }) => {
                <Settings className="w-4 h-4 text-blue-400" /> Configuration
             </h3>
             
-            {/* ✅ NEW SCANNER BUTTON */}
             <button 
                 onClick={handleAutoScan} 
-                disabled={isRunning || isScanning}
+                disabled={isRunning || isScanning} // Disable if already scanning
                 className={`w-full mb-4 py-2.5 rounded-lg font-bold flex items-center justify-center gap-2 transition-all shadow-lg text-sm ${
                     isScanning 
                     ? 'bg-slate-700 text-slate-400 cursor-wait' 
@@ -169,12 +149,12 @@ const AutoTraderDashboard: React.FC<Props> = ({ brokerState }) => {
                 }`}
             >
                 {isScanning ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-                {isScanning ? 'Scanning Market...' : 'Auto-Select Best Stocks'}
+                {isScanning ? 'Scanning Background...' : 'Auto-Select Best Stocks'}
             </button>
 
             <div className="space-y-3">
                <div>
-                 <label className="text-[10px] text-slate-500 uppercase font-bold block mb-1">Watchlist (Will Update Automatically)</label>
+                 <label className="text-[10px] text-slate-500 uppercase font-bold block mb-1">Watchlist</label>
                  <input type="text" value={config.symbols.join(', ')} disabled className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-slate-400 font-mono text-xs cursor-not-allowed" />
                </div>
                <div className="grid grid-cols-2 gap-4">
@@ -223,18 +203,31 @@ const AutoTraderDashboard: React.FC<Props> = ({ brokerState }) => {
                         <th className="p-3">Symbol</th>
                         <th className="p-3 text-right">Qty</th>
                         <th className="p-3 text-right">Entry</th>
+                        <th className="p-3 text-right text-yellow-400">Current</th>
                         <th className="p-3 text-right">P&L</th>
                         <th className="p-3 text-right">Status</th>
+                        <th className="p-3 text-right">Action</th>
                      </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800">
-                     {activeTrades.length === 0 ? <tr><td colSpan={5} className="p-4 text-center text-slate-500">No active trades.</td></tr> : activeTrades.map((t, i) => (
-                        <tr key={i}>
+                     {activeTrades.length === 0 ? <tr><td colSpan={7} className="p-4 text-center text-slate-500">No active trades.</td></tr> : activeTrades.map((t, i) => (
+                        <tr key={i} className="hover:bg-slate-800/50 transition-colors">
                            <td className="p-3 font-bold text-white">{t.symbol}</td>
                            <td className="p-3 text-right text-slate-300">{t.quantity}</td>
-                           <td className="p-3 text-right text-slate-300">{t.entryPrice}</td>
+                           <td className="p-3 text-right text-slate-300">{t.entryPrice.toFixed(2)}</td>
+                           <td className="p-3 text-right font-mono font-bold text-white">{t.currentPrice ? t.currentPrice.toFixed(2) : '...'}</td>
                            <td className={`p-3 text-right font-bold ${t.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{t.pnl.toFixed(2)}</td>
                            <td className="p-3 text-right text-emerald-400 uppercase font-bold">{t.status}</td>
+                           <td className="p-3 text-right">
+                               {t.status === 'OPEN' && (
+                                   <button 
+                                       onClick={() => existingTrader?.manualExit(t.symbol)}
+                                       className="bg-rose-500/20 hover:bg-rose-500/40 text-rose-400 border border-rose-500/50 px-2 py-1 rounded text-[10px] font-bold transition-all"
+                                   >
+                                       EXIT
+                                   </button>
+                               )}
+                           </td>
                         </tr>
                      ))}
                   </tbody>

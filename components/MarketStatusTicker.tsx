@@ -1,4 +1,3 @@
-
 import React from 'react';
 import { TrendingUp, TrendingDown, Loader2 } from 'lucide-react';
 import { MarketIndices } from '../types';
@@ -10,6 +9,7 @@ interface MarketStatusTickerProps {
 
 const MarketStatusTicker: React.FC<MarketStatusTickerProps> = ({ isMarketOpen, indices }) => {
   const renderTickerItem = (label: string, data: { price: number; changePercent: number } | undefined) => {
+    // 1. Check if data object exists
     if (!data) return (
       <div className="flex flex-col min-w-[100px] animate-pulse">
         <span className="text-[10px] text-slate-500 font-bold uppercase">{label}</span>
@@ -17,17 +17,21 @@ const MarketStatusTicker: React.FC<MarketStatusTickerProps> = ({ isMarketOpen, i
       </div>
     );
 
-    const isPositive = data.changePercent >= 0;
+    // 2. Safe Access: Default to 0 if properties are missing/null
+    // This prevents the "Cannot read properties of null" error
+    const price = data.price ?? 0;
+    const change = data.changePercent ?? 0;
+    const isPositive = change >= 0;
 
     return (
       <div className="flex flex-col min-w-[100px]">
         <span className="text-[10px] text-slate-500 font-bold uppercase">{label}</span>
         <div className="flex items-center gap-1">
            <span className="text-sm font-bold text-white font-mono">
-             {data.price.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+             {price.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
            </span>
            <span className={`text-[10px] font-bold flex items-center ${isPositive ? 'text-emerald-400' : 'text-rose-400'}`}>
-             {isPositive ? '+' : ''}{data.changePercent.toFixed(2)}% 
+             {isPositive ? '+' : ''}{change.toFixed(2)}% 
              {isPositive ? <TrendingUp className="w-3 h-3 ml-0.5"/> : <TrendingDown className="w-3 h-3 ml-0.5"/>}
            </span>
         </div>

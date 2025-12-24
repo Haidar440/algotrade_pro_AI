@@ -7,7 +7,11 @@ import StrategyCard from './StrategyCard';
 import AiPredictionCard from './AiPredictionCard'; 
 import { getGeminiPrediction, AIPrediction } from '../services/gemini'; 
 import { AngelOne } from '../services/angel';
-import { RefreshCw, Bell, Share2, Briefcase, AlertTriangle, Moon, ArrowLeft, Edit2, CheckCircle2, TrendingUp, TrendingDown, Clock, Zap } from 'lucide-react';
+import { DB_SERVICE } from '../services/db'; // ✅ Keep DB Connection
+import { 
+  RefreshCw, Bell, Share2, Briefcase, AlertTriangle, Moon, ArrowLeft, Edit2, 
+  CheckCircle2, TrendingUp, TrendingDown, Clock, Zap 
+} from 'lucide-react';
 import TradeModal from './TradeModal'; 
 
 interface StockDetailViewProps {
@@ -41,7 +45,6 @@ const StockDetailView: React.FC<StockDetailViewProps> = ({
   useEffect(() => { if (!isEditingPrice) setEditPriceVal(livePrice.toString()); }, [livePrice, isEditingPrice]);
   useEffect(() => { if (isEditingPrice && inputRef.current) inputRef.current.focus(); }, [isEditingPrice]);
 
-  // ✅ FIXED CALCULATION: Use Previous Close
   const previousClose = result.previous_close || result.current_price;
   const change = livePrice - previousClose;
   const changePercent = (change / previousClose) * 100;
@@ -51,6 +54,35 @@ const StockDetailView: React.FC<StockDetailViewProps> = ({
       const val = parseFloat(editPriceVal);
       if (!isNaN(val) && val > 0 && onPriceEdit) onPriceEdit(val);
       setIsEditingPrice(false);
+  };
+
+  // ✅ LOGIC FIX: Intercept the trade and save to DB
+  const handlePaperTradeWrapper = async (qty: number) => {
+      try {
+          // 1. Save to Database
+          await DB_SERVICE.saveTrade({
+              symbol: result.symbol,
+              entryPrice: livePrice,
+              quantity: qty,
+              type: 'PAPER', 
+              status: 'OPEN',
+              strategy: result.primary_recommendation.strategy_name || 'MANUAL',
+              target: result.primary_recommendation.target_price,
+              stopLoss: result.primary_recommendation.stop_loss,
+              entryDate: new Date(),
+              notes: `Manual Paper Trade via StockView`
+          });
+
+          // 2. Alert User
+          alert(`✅ Paper Trade Executed: Bought ${qty} ${result.symbol}`);
+
+          // 3. Update Parent (if needed)
+          if(onPaperTrade) onPaperTrade(qty);
+
+      } catch(e) {
+          console.error(e);
+          alert("❌ Failed to save paper trade to database.");
+      }
   };
 
   const handleGenerateAI = async () => {
@@ -140,7 +172,6 @@ const StockDetailView: React.FC<StockDetailViewProps> = ({
          </div>
          
          <div className="space-y-6">
-            {/* Signal Summary Card */}
             <div className={`glass-panel p-6 rounded-xl border flex flex-col items-center justify-center text-center ${
                result.primary_recommendation.signal === 'BUY' ? 'bg-emerald-500/10 border-emerald-500/20' : 
                result.primary_recommendation.signal === 'SELL' ? 'bg-rose-500/10 border-rose-500/20' : 
@@ -164,10 +195,8 @@ const StockDetailView: React.FC<StockDetailViewProps> = ({
                </p>
             </div>
 
-            {/* AI Prediction Card */}
             <AiPredictionCard prediction={aiPrediction} loading={aiLoading} onGenerate={handleGenerateAI} />
 
-            {/* Actions */}
             <div className="grid grid-cols-2 gap-3">
                <button className="flex flex-col items-center justify-center gap-1 p-3 rounded-xl bg-slate-800 border border-slate-700 hover:bg-slate-700 transition-colors text-slate-300 hover:text-white">
                   <Bell className="w-5 h-5" />
@@ -187,29 +216,32 @@ const StockDetailView: React.FC<StockDetailViewProps> = ({
          </div>
       </div>
 
-      {/* 3. Execution Plan & Real Trade Button */}
+      {/* 3. Execution Plan */}
       <div className="space-y-4">
+          {/* ✅ Passed Wrapper Logic Here */}
           <TradePlanCard 
             plan={result.primary_recommendation} 
             currentPrice={livePrice} 
             symbol={result.symbol} 
-            onPaperTrade={onPaperTrade} 
+            onPaperTrade={handlePaperTradeWrapper} 
           />
           
-          {/* ✅ REAL TRADE BUTTON */}
-          {brokerState.angel?.jwtToken ? (
-            <button 
-              onClick={() => setShowTradeModal(true)}
-              className="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-4 rounded-xl font-bold flex items-center justify-center gap-3 transition-all shadow-lg shadow-emerald-900/30 text-lg border border-emerald-500/50"
-            >
-              <Zap className="w-6 h-6 fill-current" /> 
-              EXECUTE REAL TRADE
-            </button>
-          ) : (
-            <div className="text-center p-3 bg-slate-800/50 rounded-xl border border-slate-700">
-               <span className="text-xs text-slate-500">Connect Angel One to enable Real Trading</span>
-            </div>
-          )}
+          <div className="grid grid-cols-1">
+              {/* REAL TRADE BUTTON (No Simulate button anymore) */}
+              {brokerState.angel?.jwtToken ? (
+                <button 
+                  onClick={() => setShowTradeModal(true)}
+                  className="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-4 rounded-xl font-bold flex items-center justify-center gap-3 transition-all shadow-lg shadow-emerald-900/30 text-lg border border-emerald-500/50"
+                >
+                  <Zap className="w-6 h-6 fill-current" /> 
+                  EXECUTE REAL TRADE
+                </button>
+              ) : (
+                <div className="text-center p-3 bg-slate-800/50 rounded-xl border border-slate-700 flex items-center justify-center">
+                   <span className="text-xs text-slate-500">Connect Angel One for Real Trading</span>
+                </div>
+              )}
+          </div>
       </div>
 
       {/* 4. Technical Panel */}
@@ -218,7 +250,6 @@ const StockDetailView: React.FC<StockDetailViewProps> = ({
       {/* 5. Strategy Breakdown */}
       <div>
          <h3 className="text-xl font-bold text-white mb-4">Strategy Matrix</h3>
-         
          {result.strategies_evaluated.length === 0 ? (
            <div className="p-8 rounded-xl border border-rose-500/30 bg-rose-500/10 text-center">
               <AlertTriangle className="w-10 h-10 text-rose-500 mx-auto mb-3" />
@@ -239,7 +270,6 @@ const StockDetailView: React.FC<StockDetailViewProps> = ({
           <p>{result.disclaimer}</p>
       </div>
 
-      {/* Trade Modal Popup */}
       <TradeModal 
           isOpen={showTradeModal} 
           onClose={() => setShowTradeModal(false)}

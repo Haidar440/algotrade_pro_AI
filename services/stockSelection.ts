@@ -10,121 +10,114 @@ interface StockCandidate {
 
 export class StockSelector {
   
-  // ⚙️ SETTINGS
-  private static MIN_TURNOVER = 50000000; // ₹5 Cr
-  private static MIN_PRICE = 50;
-  private static ATR_MIN_PERCENT = 1.0;
-  private static ATR_MAX_PERCENT = 6.0;
+  // ⚙️ RELAXED SETTINGS (For Debugging)
+  private static MIN_TURNOVER = 10000000; // ₹1 Cr
+  private static MIN_PRICE = 20;          
+  private static ATR_MIN_PERCENT = 0.5;   
+  private static ATR_MAX_PERCENT = 10.0;
 
-  // --- BATCH SCANNER ---
   public static async scanUniverse(angel: AngelOne, onProgress?: (msg: string) => void): Promise<StockCandidate[]> {
     const candidates: StockCandidate[] = [];
     const universe = FNO_UNIVERSE; 
-    const total = universe.length;
+    
+    // DEBUG COUNTERS
+    let failData = 0;
+    let failTrend = 0;
+    let failLiq = 0;
+    let failVol = 0;
 
-    if (onProgress) onProgress(`🚀 Starting Scan on ${total} F&O Stocks...`);
+    if (onProgress) onProgress(`🚀 Starting Scan on ${universe.length} Stocks...`);
 
     const BATCH_SIZE = 5;
     
-    for (let i = 0; i < total; i += BATCH_SIZE) {
+    for (let i = 0; i < universe.length; i += BATCH_SIZE) {
       const batch = universe.slice(i, i + BATCH_SIZE);
-      
-      if (onProgress) onProgress(`Scanning ${i + 1}-${Math.min(i + BATCH_SIZE, total)}...`);
+      if (onProgress) onProgress(`Scanning ${i + 1}-${Math.min(i + BATCH_SIZE, universe.length)}...`);
 
       const results = await Promise.all(batch.map(async (rawSymbol) => {
          try {
-             // 1. Get Token first (Validation)
-             // We use 'rawSymbol' (e.g., TCS) NOT 'TCS-EQ' for lookup/history
-             const token = await angel.searchSymbolToken(rawSymbol);
+             // 1. Fetch Data (200 Days)
+             const data = await angel.getHistoricalData(rawSymbol, "ONE_DAY", 200);
              
-             if (!token) {
-                // If simple lookup fails, TRY adding -EQ as backup
-                // (Some indices or stocks might need it, but most F&O don't)
-                const retryToken = await angel.searchSymbolToken(`${rawSymbol}-EQ`);
-                if (!retryToken) {
-                    return { passed: false, symbol: rawSymbol, reason: "Invalid Token" };
-                }
-             }
-
-             // 2. Fetch Data using the RAW Symbol
-             // The getHistoricalData function inside Angel class typically handles the token lookup
-             // or accepts the symbol. We pass the raw name "TCS".
-             const data = await angel.getHistoricalData(rawSymbol, "ONE_DAY", 250);
-             
-             if (!data || data.length < 200) {
-                 return { passed: false, symbol: rawSymbol, reason: "Insufficient Data" };
+             // ❌ DATA CHECK
+             if (!data || data.length < 50) {
+                 return { passed: false, symbol: rawSymbol, reason: "NO DATA (Check Login)" };
              }
              
-             // 3. Filter
+             // 2. Run Filters
              return this.runFilters(rawSymbol, data);
          } catch (e) { 
-             return { passed: false, symbol: rawSymbol, reason: "API Error" }; 
+             return { passed: false, symbol: rawSymbol, reason: "API CRASH" }; 
          }
       }));
 
-      // Collect winners
+      // PROCESS RESULTS
       results.forEach(res => {
          if (res.passed && res.candidate) {
             candidates.push(res.candidate);
-            if (onProgress) onProgress(`⭐ FOUND: ${res.candidate.symbol} (${res.candidate.bias})`);
+            console.log(`✅ MATCH: ${res.candidate.symbol}`); 
+         } else {
+            // Count Failures
+            const r = res.reason || "";
+            if (r.includes("DATA") || r.includes("API")) failData++;
+            else if (r.includes("Downtrend")) failTrend++;
+            else if (r.includes("Liquidity") || r.includes("Penny")) failLiq++;
+            else failVol++;
+
+            // Log first 3 failures to Console (F12) so you can see them!
+            if (i === 0) console.log(`❌ [DEBUG] Rejected ${res.symbol}: ${res.reason}`);
          }
       });
 
-      await new Promise(r => setTimeout(r, 400)); 
+      await new Promise(r => setTimeout(r, 200)); 
     }
 
-    if (onProgress) onProgress(`✅ Scan Complete. Found ${candidates.length} candidates.`);
+    // FINAL REPORT
+    const statsMsg = `📊 REPORT: Data Errors: ${failData} | Downtrend: ${failTrend} | Liquidity: ${failLiq} | Volatility: ${failVol}`;
+    if (onProgress) onProgress(statsMsg);
+    console.log(statsMsg); // Force print to console
+
     return candidates.sort((a, b) => b.score - a.score);
   }
 
-  // --- FILTER LOGIC ---
   private static runFilters(symbol: string, data: any[]): { passed: boolean, candidate?: StockCandidate, reason?: string, symbol?: string } {
-    const len = data.length;
-    const curr = data[len - 1];
+    const curr = data[data.length - 1];
     const closes = data.map((c:any) => c.close);
     const volumes = data.map((c:any) => c.volume);
     const price = curr.close;
 
-    // 1. Price Safety
+    // 1. Price & Liquidity
     if (price < this.MIN_PRICE) return { passed: false, symbol, reason: "Penny Stock" };
-
-    // 2. Liquidity Safety
     const avgVol = this.avg(volumes.slice(-20));
-    const turnover = avgVol * price;
-    if (turnover < this.MIN_TURNOVER) return { passed: false, symbol, reason: "Low Liquidity" };
+    if ((avgVol * price) < this.MIN_TURNOVER) return { passed: false, symbol, reason: "Low Liquidity" };
 
-    // 3. Trend Alignment
+    // 2. Trend (RELAXED)
     const sma200 = this.avg(closes.slice(-200));
     const ema50 = this.calculateEMA(closes, 50);
 
     let bias: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';
     let score = 0;
 
-    // BULLISH: Price > 200 SMA (Relaxed Rule)
-    if (price > sma200) {
+    // Allow if Price > 200 SMA OR Price > 50 EMA
+    if (price > sma200 || price > ema50) {
         bias = 'BULLISH';
-        score += 50;
-        if (price > ema50) score += 20; // Strong Trend
-        if (curr.volume > avgVol * 1.5) score += 15; // Volume Spike
+        score = 50;
     } 
     
-    if (bias === 'NEUTRAL') return { passed: false, symbol, reason: "Downtrend" };
+    if (bias === 'NEUTRAL') return { passed: false, symbol, reason: "Downtrend (Below 50 & 200)" };
 
-    // 4. Volatility Check
+    // 3. Volatility
     const atr = this.calculateATR(data, 14);
     const atrPct = (atr / price) * 100;
     
-    // Slightly relaxed Volatility for large caps
-    if (atrPct < 0.8) return { passed: false, symbol, reason: "Low Volatility" }; 
-    if (atrPct > this.ATR_MAX_PERCENT) return { passed: false, symbol, reason: "High Risk" };
+    if (atrPct < this.ATR_MIN_PERCENT) return { passed: false, symbol, reason: "Dead Stock (No Volatility)" }; 
 
     return { 
         passed: true, 
-        candidate: { symbol, bias, score, reason: `Trend+Liq` } 
+        candidate: { symbol, bias, score, reason: `Trend Found` } 
     };
   }
 
-  // --- MATH ---
   private static avg(arr: number[]) { return arr.reduce((a, b) => a + b, 0) / arr.length; }
   private static calculateEMA(data: number[], period: number): number {
     const k = 2 / (period + 1);

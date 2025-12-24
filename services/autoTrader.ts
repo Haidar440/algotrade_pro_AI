@@ -1,7 +1,7 @@
 import { AngelOne } from './angel';
 import { TechnicalAnalysisEngine } from './technicalAnalysis';
-import { DB_SERVICE } from './db'; // ✅ Import DB Service
-
+import { DB_SERVICE } from './db'; 
+import { StockSelector } from './stockSelection';
 export interface AutoTraderConfig {
   capital: number;
   riskPerTrade: number;
@@ -9,13 +9,14 @@ export interface AutoTraderConfig {
   targetMultiplier: number;
   enableTrailingSL: boolean;
   symbols: string[];
-  maxOpenPositions: number; 
+  maxOpenPositions: number;
+  isPaperTrading?: boolean;
 }
 
-// ✅ UPDATED INTERFACE: Added 'dbId' to track MongoDB ID
 interface ActiveTrade {
   symbol: string;
   entryPrice: number;
+  currentPrice: number; // ✅ 1. ADD THIS FIELD
   quantity: number;
   stopLoss: number;
   target: number;
@@ -24,40 +25,58 @@ interface ActiveTrade {
   highestPrice: number;
   status: 'OPEN' | 'EXITING' | 'CLOSED';
   pnl: number;
-  dbId?: string; // <--- NEW: Stores the MongoDB ID so we can update it later
+  dbId?: string;
 }
 
 export class AutoTrader {
   private angel: AngelOne;
-  private config: AutoTraderConfig;
-  
+  public config: AutoTraderConfig;
+  public isScanning: boolean = false; 
   private isRunning: boolean = false;
   private activeTrades: Map<string, ActiveTrade> = new Map();
   private dailyLoss: number = 0;
   private tradeHistory: ActiveTrade[] = [];
+  private logs: string[] = []; 
   
   private lastAnalysisTime: Map<string, number> = new Map();
-  private ANALYSIS_COOLDOWN = 300 * 1000; // 5 Minutes
+  private ANALYSIS_COOLDOWN = 300 * 1000; 
 
   private onUpdate?: (status: any) => void;
   private onLog?: (msg: string) => void;
 
-  constructor(
-    angel: AngelOne, 
-    config: AutoTraderConfig,
-    onUpdate?: (status: any) => void,
-    onLog?: (msg: string) => void
-  ) {
+  constructor(angel: AngelOne, config: AutoTraderConfig) {
     this.angel = angel;
-    this.config = { ...config, maxOpenPositions: config.maxOpenPositions || 3 };
-    this.onUpdate = onUpdate;
-    this.onLog = onLog;
+    this.config = { 
+        ...config, 
+        maxOpenPositions: config.maxOpenPositions || 3,
+        isPaperTrading: config.isPaperTrading ?? true
+    };
   }
 
-  // --- CONTROL METHODS ---
-  public start() {
+  public setCallbacks(onUpdate: (status: any) => void, onLog: (msg: string) => void) {
+      this.onUpdate = onUpdate;
+      this.onLog = onLog;
+      this.broadcastStatus(); 
+  }
+
+  public getSnapshot() {
+      return {
+          isRunning: this.isRunning,
+          isScanning: this.isScanning, 
+          activeTrades: Array.from(this.activeTrades.values()),
+          dailyPnL: this.dailyLoss,
+          logs: this.logs,
+          config: this.config
+      };
+  }
+
+  public async start() {
     this.isRunning = true;
-    this.log("🚀 Swing-Bot STARTED (Delivery Mode)");
+    const mode = this.config.isPaperTrading ? "📝 PAPER TRADING" : "💸 REAL MONEY";
+    this.log(`🚀 Swing-Bot STARTED (${mode})`);
+    
+    await this.restoreSession();
+
     this.log(`🎯 Config: Max ${this.config.maxOpenPositions} Positions | Capital ₹${this.config.capital}`);
     this.broadcastStatus();
   }
@@ -68,33 +87,110 @@ export class AutoTrader {
     this.broadcastStatus();
   }
 
+  // ... inside AutoTrader class ...
+
+  // ✅ NEW: Manual Exit Function
+  public async manualExit(symbol: string) {
+      const trade = this.activeTrades.get(symbol);
+      if (trade) {
+          this.log(`⚠️ Manual Exit Requested for ${symbol}`);
+          // Use current market price for exit
+          await this.exitPosition(trade, "MANUAL EXIT", trade.currentPrice);
+      } else {
+          this.log(`❌ Cannot Exit: No active trade for ${symbol}`);
+      }
+  }
+ // ✅ NEW: Background Scanner
+public async runScanner() {
+    if (this.isScanning) return;
+
+    this.isScanning = true;
+    this.log(`[Scanner] 🚀 Starting Background Scan...`);
+    this.broadcastStatus(); // Update UI
+
+    try {
+        // Use 'this.angel' which is already connected
+        const candidates = await StockSelector.scanUniverse(this.angel, (msg) => {
+             this.log(`[Scanner] ${msg}`);
+             // We don't broadcast every single log to save performance, 
+             // the UI will pick it up via the logs array next update.
+        });
+
+        if (candidates.length > 0) {
+            const bestPicks = candidates.slice(0, 5).map(c => c.symbol);
+            this.config.symbols = bestPicks; // Update Watchlist
+            this.log(`[Scanner] ✅ Watchlist Updated: ${bestPicks.join(', ')}`);
+        } else {
+             this.log(`[Scanner] ⚠️ No valid Swing Candidates found.`);
+        }
+    } catch (e: any) {
+        this.log(`[Scanner] ❌ Error: ${e.message}`);
+    } finally {
+        this.isScanning = false;
+        this.broadcastStatus(); // Final Update
+    }
+}
+
+ private async restoreSession() {
+      this.log("🔄 Restoring Open Swing Trades from Database...");
+      const openTrades = await DB_SERVICE.getOpenTrades();
+      
+      if (openTrades && openTrades.length > 0) {
+          openTrades.forEach((t: any) => {
+              // ✅ NEW FILTER: Skip Manual Trades
+              if (t.strategy === 'MANUAL' || t.notes?.includes('Manual')) {
+                  return; // Don't let the Bot manage/display this trade
+              }
+
+              // Normal Restoration Logic for Bot Trades
+              const sl = t.stopLoss || (t.entryPrice * 0.95);
+              const target = t.target || (t.entryPrice * 1.10);
+
+              const trade: ActiveTrade = {
+                  symbol: t.symbol,
+                  entryPrice: t.entryPrice,
+                  currentPrice: t.entryPrice, 
+                  quantity: t.quantity,
+                  stopLoss: sl,
+                  target: target,
+                  entryOrderId: "RESTORED",
+                  slOrderId: "RESTORED", 
+                  highestPrice: t.entryPrice, 
+                  status: 'OPEN',
+                  pnl: 0, 
+                  dbId: t._id
+              };
+              this.activeTrades.set(t.symbol, trade);
+              this.log(`📥 Restored Bot Trade: ${t.symbol} @ ${t.entryPrice}`);
+          });
+      } else {
+          this.log("ℹ️ No Open Bot Trades found to restore.");
+      }
+  }
+
+
   public updateConfig(newConfig: AutoTraderConfig) {
     this.config = { ...this.config, ...newConfig };
     this.log("⚙️ Config Updated");
     this.broadcastStatus();
   }
 
-  // --- CORE LOOP ---
   public async processTick(symbol: string, ltp: number) {
     if (!this.isRunning) return;
 
-    // 1. SAFETY: Daily Loss
     if (this.dailyLoss <= -this.config.maxDailyLoss) {
       this.log(`⛔ Max Loss Hit (₹${this.dailyLoss}). Stopping.`);
       this.stop();
       return;
     }
 
-    // 2. MANAGE EXISTING
     if (this.activeTrades.has(symbol)) {
       await this.managePosition(symbol, ltp);
       return;
     }
 
-    // 3. CHECK LIMITS
     if (this.activeTrades.size >= this.config.maxOpenPositions) return; 
 
-    // 4. SCAN FOR ENTRY
     if (this.config.symbols.includes(symbol)) {
        const lastRun = this.lastAnalysisTime.get(symbol) || 0;
        const now = Date.now();
@@ -113,7 +209,6 @@ export class AutoTrader {
     }
   }
 
-  // --- ENTRY LOGIC ---
   private async evaluateEntry(symbol: string, ltp: number, candles: any[]) {
     try {
       const analysis = TechnicalAnalysisEngine.analyze(symbol, candles);
@@ -140,80 +235,70 @@ export class AutoTrader {
     } catch (e) { console.error(e); }
   }
 
-  // --- EXECUTION ---
   private async executeEntry(symbol: string, price: number, sl: number, qty: number, strategy: string) {
     try {
+      if (this.config.isPaperTrading) {
+          this.log(`📝 [PAPER] Simulating BUY: ${symbol} @ ₹${price}`);
+          
+          let dbId = undefined;
+          try {
+             const dbTrade = {
+                symbol, entryPrice: price, quantity: qty,
+                type: 'PAPER', 
+                status: 'OPEN', strategy, entryDate: new Date(),
+                notes: `Paper Trade | Target: ${(price * 1.1).toFixed(1)}`
+             };
+             const saved = await DB_SERVICE.saveTrade(dbTrade);
+             if (saved) dbId = saved._id;
+          } catch(e) {}
+
+          const target = price + (price - sl) * this.config.targetMultiplier;
+          const newTrade: ActiveTrade = {
+             symbol, entryPrice: price, currentPrice: price, // ✅ 2. Initialize with Price
+             quantity: qty, stopLoss: sl, target,
+             entryOrderId: `SIM_${Date.now()}`, slOrderId: `SIM_SL_${Date.now()}`,
+             highestPrice: price, status: 'OPEN', pnl: 0, dbId
+          };
+          
+          this.activeTrades.set(symbol, newTrade);
+          this.broadcastStatus();
+          return;
+      }
+
       const token = await this.angel.searchSymbolToken(symbol);
-      
-      // 1. PLACE ORDER FIRST
       const entryRes = await this.angel.placeOrder({
-        variety: 'NORMAL',
-        tradingsymbol: `${symbol}-EQ`,
-        symboltoken: token,
-        transactiontype: 'BUY',
-        exchange: 'NSE',
-        ordertype: 'MARKET',
-        producttype: 'DELIVERY',
-        duration: 'DAY',
-        price: '0',
-        quantity: qty.toString()
+        variety: 'NORMAL', tradingsymbol: `${symbol}-EQ`, symboltoken: token,
+        transactiontype: 'BUY', exchange: 'NSE', ordertype: 'MARKET',
+        producttype: 'DELIVERY', duration: 'DAY', price: '0', quantity: qty.toString()
       });
 
       if (entryRes.status && entryRes.orderid) {
         this.log(`✅ BUY Success: ${symbol}`);
-
-        // 2. SAVE TO MONGODB (Capture the ID)
+        
         let dbId = undefined;
         try {
             const dbTrade = {
-                symbol: symbol,
-                entryPrice: price,
-                quantity: qty,
-                type: 'SWING',
-                status: 'OPEN',
-                strategy: strategy,
-                entryDate: new Date(),
+                symbol, entryPrice: price, quantity: qty, type: 'SWING',
+                status: 'OPEN', strategy, entryDate: new Date(),
                 notes: `Bot Entry | Target: ${(price * 1.1).toFixed(1)}`
             };
-            const savedTrade = await DB_SERVICE.saveTrade(dbTrade);
-            if(savedTrade) {
-                dbId = savedTrade._id; // ✅ Save the ID!
-                this.log(`💾 Trade Saved to DB (ID: ${dbId})`);
-            }
-        } catch(e) { this.log("⚠️ DB Save Failed"); }
+            const saved = await DB_SERVICE.saveTrade(dbTrade);
+            if(saved) dbId = saved._id;
+        } catch(e) {}
 
-        // 3. STOP LOSS ORDER
         const slRes = await this.angel.placeOrder({
-          variety: 'STOPLOSS',
-          tradingsymbol: `${symbol}-EQ`,
-          symboltoken: token,
-          transactiontype: 'SELL',
-          exchange: 'NSE',
-          ordertype: 'STOPLOSS_LIMIT',
-          producttype: 'DELIVERY',
-          duration: 'DAY',
-          price: (sl - 0.5).toString(),
-          triggerprice: sl.toString(),
-          quantity: qty.toString()
+          variety: 'STOPLOSS', tradingsymbol: `${symbol}-EQ`, symboltoken: token,
+          transactiontype: 'SELL', exchange: 'NSE', ordertype: 'STOPLOSS_LIMIT',
+          producttype: 'DELIVERY', duration: 'DAY', price: (sl - 0.5).toString(),
+          triggerprice: sl.toString(), quantity: qty.toString()
         });
 
-        const slOrderId = slRes.status ? slRes.orderid : undefined;
-        if(slOrderId) this.log(`🛡️ Stop Loss Placed: ${symbol} @ ${sl}`);
-
-        // 4. ADD TO MEMORY
         const target = price + (price - sl) * this.config.targetMultiplier;
         const newTrade: ActiveTrade = {
-          symbol,
-          entryPrice: price,
-          quantity: qty,
-          stopLoss: sl,
-          target: target,
-          entryOrderId: entryRes.orderid!,
-          slOrderId: slOrderId,
-          highestPrice: price,
-          status: 'OPEN',
-          pnl: 0,
-          dbId: dbId // ✅ Store DB ID here
+          symbol, entryPrice: price, currentPrice: price, // ✅ 2. Initialize with Price
+          quantity: qty, stopLoss: sl, target,
+          entryOrderId: entryRes.orderid!, slOrderId: slRes.orderid,
+          highestPrice: price, status: 'OPEN', pnl: 0, dbId
         };
 
         this.activeTrades.set(symbol, newTrade);
@@ -222,14 +307,14 @@ export class AutoTrader {
     } catch (e: any) { this.log(`❌ Execution Error: ${e.message}`); }
   }
 
-  // --- MANAGEMENT ---
   private async managePosition(symbol: string, ltp: number) {
     const trade = this.activeTrades.get(symbol);
     if (!trade || trade.status !== 'OPEN') return;
 
+    // ✅ 3. CRITICAL: Store the new price here!
+    trade.currentPrice = ltp; 
     trade.pnl = (ltp - trade.entryPrice) * trade.quantity;
     
-    // Trailing SL
     if (this.config.enableTrailingSL) {
        if (ltp > trade.highestPrice) {
          trade.highestPrice = ltp;
@@ -237,86 +322,58 @@ export class AutoTrader {
        }
     }
 
-    // Exit Conditions
     if (ltp >= trade.target) {
       this.log(`🎯 Target Hit: ${symbol} @ ${ltp}`);
-      await this.exitPosition(trade, "TARGET");
+      await this.exitPosition(trade, "TARGET", ltp);
     } else if (ltp <= trade.stopLoss) {
         this.log(`🛑 SL Triggered: ${symbol}`);
-        await this.exitPosition(trade, "SL HIT");
+        await this.exitPosition(trade, "SL HIT", ltp);
     }
     
     this.broadcastStatus();
   }
 
   private async checkTrailingSL(trade: ActiveTrade, ltp: number) {
-    if (!trade.slOrderId) return;
-    
     const initialRisk = trade.entryPrice - trade.stopLoss;
     const newStopLoss = trade.highestPrice - initialRisk; 
     const threshold = trade.entryPrice * 0.02; 
 
     if (newStopLoss > (trade.stopLoss + threshold)) {
        this.log(`🔄 Trailing SL: ${trade.symbol} -> ${newStopLoss.toFixed(2)}`);
-       
-       const res = await this.angel.modifyOrder({
-         variety: 'STOPLOSS',
-         orderid: trade.slOrderId,
-         ordertype: 'STOPLOSS_LIMIT',
-         producttype: 'DELIVERY',
-         duration: 'DAY',
-         price: (newStopLoss - 0.5).toFixed(1),
-         triggerprice: newStopLoss.toFixed(1),
-         quantity: trade.quantity.toString(),
-         tradingsymbol: `${trade.symbol}-EQ`,
-         symboltoken: await this.angel.searchSymbolToken(trade.symbol),
-         exchange: 'NSE'
-       });
+       trade.stopLoss = newStopLoss;
 
-       if (res.status) trade.stopLoss = newStopLoss;
+       if (!this.config.isPaperTrading && trade.slOrderId) {
+           await this.angel.modifyOrder({
+             variety: 'STOPLOSS', orderid: trade.slOrderId,
+             ordertype: 'STOPLOSS_LIMIT', producttype: 'DELIVERY', duration: 'DAY',
+             price: (newStopLoss - 0.5).toFixed(1), triggerprice: newStopLoss.toFixed(1),
+             quantity: trade.quantity.toString(), tradingsymbol: `${trade.symbol}-EQ`,
+             symboltoken: await this.angel.searchSymbolToken(trade.symbol), exchange: 'NSE'
+           });
+       }
     }
   }
 
-  // --- EXIT LOGIC (NOW UPDATES DB!) ---
-  private async exitPosition(trade: ActiveTrade, reason: string) {
+  private async exitPosition(trade: ActiveTrade, reason: string, exitPrice: number) {
     trade.status = 'EXITING';
+    
+    if (this.config.isPaperTrading) {
+        this.log(`📝 [PAPER] Simulating SELL: ${trade.symbol} @ ₹${exitPrice}`);
+        this.finalizeExit(trade, reason, exitPrice);
+        return;
+    }
+
     try {
       const token = await this.angel.searchSymbolToken(trade.symbol);
       if (trade.slOrderId) await this.angel.cancelOrder(trade.slOrderId, 'STOPLOSS');
 
       await this.angel.placeOrder({
-        variety: 'NORMAL',
-        tradingsymbol: `${trade.symbol}-EQ`,
-        symboltoken: token,
-        transactiontype: 'SELL',
-        exchange: 'NSE',
-        ordertype: 'MARKET',
-        producttype: 'DELIVERY',
-        duration: 'DAY',
-        price: '0',
-        quantity: trade.quantity.toString()
+        variety: 'NORMAL', tradingsymbol: `${trade.symbol}-EQ`, symboltoken: token,
+        transactiontype: 'SELL', exchange: 'NSE', ordertype: 'MARKET',
+        producttype: 'DELIVERY', duration: 'DAY', price: '0', quantity: trade.quantity.toString()
       });
 
-      this.log(`🔒 Closed (${reason}) PnL: ₹${trade.pnl.toFixed(2)}`);
-
-      // ✅ UPDATE MONGODB
-      if (trade.dbId) {
-          try {
-            await DB_SERVICE.updateTrade(trade.dbId, {
-                status: 'CLOSED',
-                exitDate: new Date(),
-                exitPrice: trade.entryPrice + (trade.pnl / trade.quantity), // Approximate exit price
-                pnl: trade.pnl,
-                notes: `Closed by Bot: ${reason}`
-            });
-            this.log(`💾 DB Updated: Trade Closed`);
-          } catch(e) { this.log("⚠️ Failed to update DB on exit"); }
-      }
-
-      this.dailyLoss += trade.pnl;
-      this.activeTrades.delete(trade.symbol);
-      this.tradeHistory.push({ ...trade, status: 'CLOSED' });
-      this.broadcastStatus();
+      this.finalizeExit(trade, reason, exitPrice);
 
     } catch (e: any) {
       this.log(`❌ Exit Failed: ${e.message}`);
@@ -324,20 +381,44 @@ export class AutoTrader {
     }
   }
 
+  private async finalizeExit(trade: ActiveTrade, reason: string, exitPrice: number) {
+      this.log(`🔒 Closed (${reason}) PnL: ₹${trade.pnl.toFixed(2)}`);
+      
+      if (trade.dbId) {
+          try {
+            await DB_SERVICE.updateTrade(trade.dbId, {
+                status: 'CLOSED', exitDate: new Date(),
+                exitPrice: exitPrice, pnl: trade.pnl,
+                notes: `Closed by Bot: ${reason}`
+            });
+          } catch(e) {}
+      }
+
+      this.dailyLoss += trade.pnl;
+      this.activeTrades.delete(trade.symbol);
+      this.tradeHistory.push({ ...trade, status: 'CLOSED' });
+      this.broadcastStatus();
+  }
+
   private log(msg: string) {
     const time = new Date().toLocaleTimeString();
-    console.log(`[AutoTrader ${time}] ${msg}`);
-    if (this.onLog) this.onLog(`[${time}] ${msg}`);
+    const logEntry = `[AutoTrader ${time}] ${msg}`;
+    console.log(logEntry);
+    this.logs.push(logEntry); 
+    if (this.logs.length > 50) this.logs.shift(); 
+    if (this.onLog) this.onLog(logEntry);
   }
 
   private broadcastStatus() {
     if (this.onUpdate) {
         this.onUpdate({
             isRunning: this.isRunning,
+            isScanning: this.isScanning,
             activeTrades: Array.from(this.activeTrades.values()),
             dailyPnL: this.dailyLoss, 
             history: this.tradeHistory
         });
     }
   }
+  
 }

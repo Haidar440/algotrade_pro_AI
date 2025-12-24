@@ -5,7 +5,7 @@ import { streamer } from './services/streaming';
 import { AngelOne } from './services/angel';
 import { TechnicalAnalysisEngine } from './services/technicalAnalysis';
 import { analyzeStockTicker, fetchMarketIndices } from './services/gemini';
-
+import { AutoTrader, AutoTraderConfig } from './services/autoTrader';
 // --- COMPONENTS ---
 import PaperTradingDashboard from './components/PaperTradingDashboard';
 import Sidebar from './components/Sidebar';
@@ -23,6 +23,8 @@ import NewsAnalysisDashboard from './components/NewsAnalysisDashboard';
 import RealPortfolio from './components/RealPortfolio';
 import AutoTraderDashboard from './components/AutoTraderDashboard';
 import { checkMarketStatus } from './utils/marketTime';
+import TradeHistory from './components/TradeHistory';
+import WatchlistManager from './components/WatchlistManager';
 import { 
   Activity, Search, AlertTriangle, Moon, Filter, RefreshCw, Lock, Zap, Briefcase, Bot
 } from 'lucide-react';
@@ -30,7 +32,7 @@ import {
 const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<View>('SCANNER');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-
+  const [autoTraderInstance, setAutoTraderInstance] = useState<AutoTrader | null>(null);
   // --- STATE ---
   const [paperTrades, setPaperTrades] = useState<PaperTrade[]>(() => {
     try { return JSON.parse(localStorage.getItem('algoTradePro_portfolio') || '[]'); } catch { return []; }
@@ -53,6 +55,24 @@ const App: React.FC = () => {
   const [loadingStep, setLoadingStep] = useState<number>(0);
   const [isMarketOpen, setIsMarketOpen] = useState(false);
   const [marketIndices, setMarketIndices] = useState<MarketIndices | null>(null);
+
+  // ... existing effects ...
+
+  // ✅ Initialize Global AutoTrader
+  useEffect(() => {
+    if (brokerState.angel && !autoTraderInstance) {
+      console.log("🤖 Initializing Global Auto-Trader...");
+      const angel = new AngelOne(brokerState.angel);
+      const defaultConfig: AutoTraderConfig = {
+         capital: 50000, riskPerTrade: 1, maxDailyLoss: 2000,
+         targetMultiplier: 2, enableTrailingSL: true,
+         symbols: ['SBIN', 'RELIANCE'], maxOpenPositions: 3,
+         isPaperTrading: true
+      };
+      const trader = new AutoTrader(angel, defaultConfig);
+      setAutoTraderInstance(trader);
+    }
+  }, [brokerState]);
 
   // 2. Add this NEW useEffect
   useEffect(() => {
@@ -292,6 +312,7 @@ const App: React.FC = () => {
                {['All', 'Buy', 'Sell', 'Strong Buy'].map(t => (
                   <button key={t} onClick={() => setFilterType(t)} className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all border ${filterType === t ? 'bg-emerald-500 text-white border-emerald-500 shadow-lg' : 'bg-slate-800 text-slate-400 border-slate-700 hover:border-slate-600 hover:text-white'}`}>{t}</button>
                ))}
+               
             </div>
          </div>
          <div>
@@ -378,17 +399,17 @@ const App: React.FC = () => {
                 )}
               </div>
             )}
-            
-            {currentView === 'WATCHLIST' && (
-              <div className="max-w-4xl mx-auto space-y-6">
-                  <div className="flex justify-between items-center mb-6">
-                    <h2 className="text-2xl font-bold text-white flex items-center gap-2"><Moon className="w-6 h-6 text-emerald-400" /> My Watchlist</h2>
-                    <button onClick={refreshWatchlist} className="p-2 bg-slate-800 rounded-lg hover:bg-slate-700 transition-colors" disabled={isRefreshingWatchlist}><RefreshCw className={`w-4 h-4 text-slate-400 ${isRefreshingWatchlist ? 'animate-spin' : ''}`} /></button>
-                  </div>
-                  {watchlist.length === 0 ? <p className="text-slate-500 text-center py-10">Your watchlist is empty.</p> : watchlist.map(item => <WatchlistRow key={item.id} item={item} onAnalyze={runAnalysis} onDelete={removeFromWatchlist} />)}
+              {currentView === 'WATCHLIST' && (
+              <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+                  {/* Make sure runAnalysis is defined in your App.tsx 
+                    and brokerState is the state object holding your Angel tokens 
+                  */}
+                  <WatchlistManager 
+                      onAnalyze={runAnalysis} 
+                      brokerState={brokerState} 
+                  />
               </div>
             )}
-
             {currentView === 'REAL_PORTFOLIO' && (
               <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
                   <h2 className="text-2xl font-bold text-white mb-6 flex items-center gap-2"><Briefcase className="w-6 h-6 text-blue-400" /> Angel One Portfolio</h2>
@@ -406,10 +427,14 @@ const App: React.FC = () => {
             {currentView === 'AUTO_TRADER' && (
               <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
                   <h2 className="text-2xl font-bold text-white mb-6 flex items-center gap-2"><Bot className="w-6 h-6 text-amber-500" /> Algorithmic Trading Engine</h2>
-                  <AutoTraderDashboard brokerState={brokerState} />
+                  <AutoTraderDashboard brokerState={brokerState} existingTrader={autoTraderInstance} />
               </div>
             )}
-            
+            {currentView === 'TRADE_HISTORY' && (
+  <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <TradeHistory brokerState={brokerState} />
+  </div>
+)}
             {currentView === 'NEWS' && <div className="h-full"><NewsAnalysisDashboard /></div>}
             {currentView === 'BACKTEST' && <BacktestDashboard brokerState={brokerState} />}
             {currentView === 'STRATEGIES' && <StrategyGuide />}

@@ -9,7 +9,8 @@ import {
   Briefcase, 
   FileText,
   Terminal,
-  Bot
+  Bot,
+  Calendar
 } from 'lucide-react';
 import { View } from '../types';
 
@@ -117,6 +118,17 @@ const Sidebar: React.FC<SidebarProps> = ({ activeView, onSelectView, isOpen, onC
            >
              <FileText className="w-5 h-5" /> Paper Simulator
            </button>
+                <button 
+                    onClick={() => { onSelectView('TRADE_HISTORY'); onClose(); }}
+                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl font-bold transition-all ${
+                      activeView === 'TRADE_HISTORY' 
+                        ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/20' 
+                        : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                    }`}
+                  >
+                    <Calendar className="w-5 h-5" />
+                    <span className="block">Trade History</span>
+                  </button>
 
            <div className="px-4 pt-4 pb-2 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Analysis Tools</div>
 
@@ -139,6 +151,8 @@ const Sidebar: React.FC<SidebarProps> = ({ activeView, onSelectView, isOpen, onC
            >
              <FlaskConical className="w-5 h-5" /> Backtest Engine
            </button>
+           
+      
 
            {/* News */}
            <button

@@ -8,7 +8,7 @@ import mongoose from 'mongoose';
 
 import Trade from './models/Trade.js';
 import Instrument from './models/Instrument.js';
-
+import Watchlist from './models/Watchlist.js'; // Ensure the path is correct
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -130,6 +130,16 @@ app.get('/api/get-token', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.delete('/api/trades/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await Trade.findByIdAndDelete(id);
+    res.json({ success: true, message: 'Trade deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to delete trade' });
+  }
+});
+
 // 4. ✅ FIXED ANGEL PROXY (Handles GET vs POST correctly)
 app.post('/api/angel-proxy', async (req, res) => {
     const { endpoint, data } = req.body;
@@ -147,6 +157,7 @@ app.post('/api/angel-proxy', async (req, res) => {
         'placeOrder':      { url: '/secure/angelbroking/order/v1/placeOrder', method: 'POST' },
         'modifyOrder':     { url: '/secure/angelbroking/order/v1/modifyOrder', method: 'POST' },
         'cancelOrder':     { url: '/secure/angelbroking/order/v1/cancelOrder', method: 'POST' },
+        'generateTokens': { url: '/auth/angelbroking/jwt/v1/generateTokens', method: 'POST' }, // <--- ADD THIS
         
         // ✅ THESE MUST BE 'GET'
         'getOrderBook':    { url: '/secure/angelbroking/order/v1/getOrderBook', method: 'GET' },
@@ -191,5 +202,62 @@ app.post('/api/angel-proxy', async (req, res) => {
     }
 });
 
+
+// --- WATCHLIST MANAGEMENT ROUTES ---
+
+// 1. Get all watchlist names (for the dropdown)
+app.get('/api/watchlists/names', async (req, res) => {
+  try {
+    const names = await Watchlist.find().select('name -_id');
+    res.json(names.map(w => w.name));
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+// 2. Get a specific watchlist by name
+app.get('/api/watchlists/:name', async (req, res) => {
+  try {
+    const list = await Watchlist.findOne({ name: req.params.name });
+    if (!list) return res.status(404).json({ message: "List not found" });
+    res.json(list);
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+// 3. Save or Update a Watchlist (Upsert)
+app.post('/api/watchlists', async (req, res) => {
+  const { name, items } = req.body;
+  try {
+    const updatedList = await Watchlist.findOneAndUpdate(
+      { name: name }, // Search by name
+      { items: items, lastUpdated: Date.now() }, // Update these fields
+      { upsert: true, new: true } // Create if doesn't exist, return new doc
+    );
+    res.json(updatedList);
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+
+// 4. Delete a Watchlist
+app.delete('/api/watchlists/:name', async (req, res) => {
+  try {
+    await Watchlist.findOneAndDelete({ name: req.params.name });
+    res.json({ success: true, message: 'Watchlist deleted' });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+// ✅ NEW: Rename a Watchlist
+app.put('/api/watchlists/rename', async (req, res) => {
+  const { oldName, newName } = req.body;
+  try {
+    const updatedList = await Watchlist.findOneAndUpdate(
+      { name: oldName },
+      { name: newName, lastUpdated: Date.now() },
+      { new: true }
+    );
+    if (!updatedList) return res.status(404).json({ error: "List not found" });
+    res.json(updatedList);
+  } catch (error) {
+    res.status(400).json({ error: "Name already exists or invalid" });
+  }
+});
 const PORT = 5000;
 server.listen(PORT, () => console.log(`✅ Backend running on port ${PORT}`));
+
