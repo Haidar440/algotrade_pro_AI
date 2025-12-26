@@ -156,7 +156,8 @@ async renewAccessToken() {
 
 
  // --- 5. MARKET DATA ---
-  async getHistoricalData(symbol: string, interval: string = "ONE_DAY", days: number = 200): Promise<any[]> {
+  async getHistoricalData(symbol: string, interval: string = "ONE_DAY", days: number = 200): 
+  Promise<any[]> {
     let token = "";
     try { 
         token = await this.searchSymbolToken(symbol); 

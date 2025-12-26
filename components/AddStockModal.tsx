@@ -62,7 +62,8 @@ const AddStockModal: React.FC<AddStockModalProps> = ({ isOpen, onClose, onAdd })
                     id: Math.random().toString(36).substr(2, 9),
                     symbol: stock.symbol,
                     name: stock.name,
-                    price: 0, // Will be updated by live feed
+                    token: stock.token, // ✅ CRITICAL FIX: Add this line to save the numeric ID
+                    price: 0,
                     changePercent: 0,
                     strategy: 'MANUAL'
                 })}

@@ -55,7 +55,7 @@ const App: React.FC = () => {
   const [loadingStep, setLoadingStep] = useState<number>(0);
   const [isMarketOpen, setIsMarketOpen] = useState(false);
   const [marketIndices, setMarketIndices] = useState<MarketIndices | null>(null);
-
+  
   // ... existing effects ...
 
   // ✅ Initialize Global AutoTrader

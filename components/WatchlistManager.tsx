@@ -2,27 +2,36 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { DB_SERVICE } from '../services/db';
 import { BrokerState, SignalFeedItem } from '../types';
 import Sparkline from './Sparkline';
-import AddStockModal from './AddStockModal'; // ✅ New Import
+import axios from 'axios';
+import AddStockModal from './AddStockModal';
+import { io } from 'socket.io-client'; // ✅ 1. Import Socket.io client
 import { 
   Search, Plus, Trash2, TrendingUp, TrendingDown, 
   ChevronRight, List, AlertCircle, Loader2, Edit3, Check, RotateCcw, X
 } from 'lucide-react';
+
+// ✅ 2. Initialize the socket connection to your backend
+const socket = io('http://localhost:5000');
 
 interface Props {
   onAnalyze: (symbol: string) => void;
   brokerState: BrokerState;
 }
 
+// Extension of the type to handle the visual flashing effect locally
+interface WatchlistItem extends SignalFeedItem {
+  token: string;
+  lastChange?: 'flash-up' | 'flash-down' | '';
+}
+
 const WatchlistManager: React.FC<Props> = ({ onAnalyze, brokerState }) => {
   const [listNames, setListNames] = useState<string[]>([]);
   const [activeList, setActiveList] = useState('Default');
-  const [items, setItems] = useState<SignalFeedItem[]>([]);
+  const [items, setItems] = useState<WatchlistItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [isEditMode, setIsEditMode] = useState(false);
   const [pendingDeletions, setPendingDeletions] = useState<string[]>([]);
-  
-  // ✅ NEW: Modal State
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
 
   const loadListNames = async () => {
@@ -35,42 +44,195 @@ const WatchlistManager: React.FC<Props> = ({ onAnalyze, brokerState }) => {
     } catch (e) { console.error("Load names error", e); }
   };
 
-  const loadItems = async () => {
-    setLoading(true);
-    try {
-      const data = await DB_SERVICE.getWatchlist(activeList);
-      setItems(data?.items || []);
-    } catch (e) { console.error("Load items error", e); }
-    finally { setLoading(false); }
-  };
+  // Inside WatchlistManager.tsx
 
+// ✅ UPDATED: loadItems to handle immediate subscription
+   // algotrade-pro1/components/WatchlistManager.tsx
+
+const loadItems = async () => {
+  setLoading(true);
+  try {
+    const data = await DB_SERVICE.getWatchlist(activeList);
+    const listItems = data?.items || [];
+    
+    // ✅ 1. Get initial prices for all tokens via API
+    const updatedItems = await Promise.all(listItems.map(async (item: any) => {
+      try {
+        // This calls your backend proxy 'getLtpData'
+        const response = await axios.post('http://localhost:5000/api/angel-proxy', {
+          endpoint: 'getLtpData',
+          data: {
+            exchange: "NSE",
+            symboltoken: item.token,
+            tradingsymbol: item.symbol
+          }
+        });
+        
+        return {
+          ...item,
+          price: response.data.data?.ltp || item.price,
+          changePercent: response.data.data?.close ? 
+            ((response.data.data.ltp - response.data.data.close) / response.data.data.close * 100) : 0
+        };
+      } catch (err) {
+        return item;
+      }
+    }));
+
+    setItems(updatedItems);
+
+    // ✅ 2. Subscribe for any further live updates
+    updatedItems.forEach((item: any) => {
+      if (item.token) socket.emit('subscribe', item.token);
+    });
+
+  } catch (e) { console.error("Load items error", e); }
+  finally { setLoading(false); }
+};
+// ✅ UPDATED: Enhanced Price Listener
+useEffect(() => {
+    // ✅ Use a stable listener function
+    const onPriceUpdate = (data: any) => {
+        // 🔥 DEBUG: If you see this in your Browser F12 Console, prices WILL move
+        console.log("📥 Incoming Tick:", data.token, "LTP:", data.lp);
+
+        setItems(prevItems => prevItems.map(item => {
+            // Type-safe check (convert both to string)
+            if (String(item.token) === String(data.token)) {
+                const newPrice = parseFloat(data.lp) || item.price;
+                const flash = newPrice > item.price ? 'flash-up' : newPrice < item.price ? 'flash-down' : '';
+
+                return {
+                    ...item,
+                    price: newPrice,
+                    changePercent: parseFloat(data.pc) || item.changePercent,
+                    lastChange: flash
+                };
+            }
+            return item;
+        }));
+    };
+
+    socket.on('price-update', onPriceUpdate);
+
+    return () => {
+        socket.off('price-update', onPriceUpdate);
+    };
+}, []);
   useEffect(() => { loadListNames(); }, []);
   useEffect(() => { if (activeList) loadItems(); }, [activeList]);
 
-  // ✅ NEW: Add Stock Logic
-  const handleAddStock = async (stock: any) => {
-    const updatedList = await DB_SERVICE.saveWatchlist(activeList, [...items, stock]);
-    setItems(updatedList.items);
-    setIsAddModalOpen(false);
-  };
+ 
 
-  const markForDeletion = (name: string) => {
-    if (name === 'Default') return alert("Cannot delete Default list");
-    setPendingDeletions(prev => [...prev, name]);
-  };
+  // Inside WatchlistManager.tsx
+
+const handleAddStock = async (stock: any) => {
+    try {
+        // ✅ 1. DUPLICATE CHECK
+        // We check if the token already exists in our 'items' state
+        const isDuplicate = items.some(item => String(item.token) === String(stock.token));
+        
+        if (isDuplicate) {
+            alert(`⚠️ ${stock.symbol} is already in your watchlist!`);
+            setIsAddModalOpen(false);
+            return; // Stop execution here
+        }
+
+        console.log("🔍 Fetching data for new stock:", stock.symbol);
+
+        // 2. Fetch the real price and close price
+        const response = await axios.post('http://localhost:5000/api/angel-proxy', {
+            endpoint: 'getLtpData',
+            data: {
+                exchange: "NSE",
+                symboltoken: stock.token,
+                tradingsymbol: stock.symbol
+            }
+        });
+
+        const currentLtp = response.data.data?.ltp || 0;
+        const closePrice = response.data.data?.close || 0;
+        const calculatedChange = closePrice > 0 ? ((currentLtp - closePrice) / closePrice) * 100 : 0;
+
+        // 3. Prepare the final stock object
+        const stockWithData = {
+            ...stock,
+            price: currentLtp,
+            changePercent: calculatedChange,
+            id: stock.id || `stock-${stock.token}-${Date.now()}`, // Unique ID
+        };
+
+        // 4. Update the database and local state
+        const updatedItems = [...items, stockWithData];
+        await DB_SERVICE.saveWatchlist(activeList, updatedItems);
+        setItems(updatedItems);
+        
+        // 5. Start real-time tracking
+        if (stockWithData.token) {
+            socket.emit('subscribe', stockWithData.token);
+        }
+
+    } catch (error) {
+        console.error("❌ Failed to add stock:", error);
+    } finally {
+        setIsAddModalOpen(false);
+    }
+};
+ const markForDeletion = (name: string) => {
+    // 1. Safety check for the Default list
+    if (name.toLowerCase() === 'default') {
+        alert("⚠️ You cannot delete the Default watchlist.");
+        return;
+    }
+    
+    // 2. Add to pending list
+    setPendingDeletions(prev => {
+        if (prev.includes(name)) return prev; // Avoid duplicates in pending
+        return [...prev, name];
+    });
+};
 
   const handleUndo = () => {
     setPendingDeletions(prev => prev.slice(0, -1));
   };
 
-  const handleDone = async () => {
-    await Promise.all(pendingDeletions.map(name => DB_SERVICE.deleteWatchlist(name)));
-    const remaining = listNames.filter(n => !pendingDeletions.includes(n));
-    setListNames(remaining);
-    if (pendingDeletions.includes(activeList)) setActiveList(remaining[0] || 'Default');
-    setPendingDeletions([]);
-    setIsEditMode(false);
-  };
+ const handleDone = async () => {
+    if (pendingDeletions.length === 0) {
+        setIsEditMode(false);
+        return;
+    }
+
+    try {
+        console.log("🗑️ Starting deletion for:", pendingDeletions);
+
+        // 1. Delete from Database
+        await Promise.all(
+            pendingDeletions.map(name => 
+                axios.delete(`http://localhost:5000/api/watchlists/${encodeURIComponent(name)}`)
+            )
+        );
+
+        // 2. Update UI locally (Remove deleted names from the tabs)
+        const updatedNames = listNames.filter(n => !pendingDeletions.includes(n));
+        setListNames(updatedNames);
+
+        // 3. Handle Active List Fallback
+        // If we just deleted the list the user was looking at, switch to another one
+        if (pendingDeletions.includes(activeList)) {
+            const fallback = updatedNames.length > 0 ? updatedNames[0] : 'Default';
+            setActiveList(fallback);
+        }
+
+        // 4. Reset states
+        setPendingDeletions([]);
+        setIsEditMode(false);
+        console.log("✅ Watchlists deleted and UI updated.");
+
+    } catch (error) {
+        console.error("❌ Failed to delete watchlists:", error);
+        alert("Could not delete watchlists. Make sure your backend is running.");
+    }
+};
 
   const handleCreateNewList = async () => {
     const name = prompt("Enter new Watchlist name:");
@@ -133,7 +295,6 @@ const WatchlistManager: React.FC<Props> = ({ onAnalyze, brokerState }) => {
 
         <div className="flex items-center gap-2 pb-2">
             {!isEditMode && (
-              /* ✅ ADD STOCK BUTTON */
               <button 
                   onClick={() => setIsAddModalOpen(true)}
                   className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-500 shadow-lg shadow-blue-900/20 transition-all"
@@ -217,7 +378,15 @@ const WatchlistManager: React.FC<Props> = ({ onAnalyze, brokerState }) => {
                         <Sparkline isPositive={item.changePercent >= 0} color={item.changePercent >= 0 ? '#10b981' : '#f43f5e'} id={item.id} />
                      </div>
                   </td>
-                  <td className="p-5 text-right font-mono font-bold text-slate-300">₹{item.price.toLocaleString()}</td>
+
+                  {/* ✅ 6. UPDATED PRICE CELL FOR FLASHING EFFECT */}
+                  <td className={`p-5 text-right font-mono font-bold transition-all duration-700 ${
+                    item.lastChange === 'flash-up' ? 'text-emerald-400 flash-up' : 
+                    item.lastChange === 'flash-down' ? 'text-rose-400 flash-down' : 'text-slate-300'
+                  }`}>
+                    ₹{item.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  </td>
+
                   <td className={`p-5 text-right font-mono font-black text-sm ${item.changePercent >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                     {item.changePercent >= 0 ? '+' : ''}{item.changePercent.toFixed(2)}%
                   </td>
@@ -238,7 +407,6 @@ const WatchlistManager: React.FC<Props> = ({ onAnalyze, brokerState }) => {
         </div>
       </div>
 
-      {/* ✅ MODAL COMPONENT */}
       <AddStockModal 
           isOpen={isAddModalOpen} 
           onClose={() => setIsAddModalOpen(false)} 

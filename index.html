@@ -26,6 +26,7 @@
         }
       }
     </script>
+ 
     <style>
       body {
         background-color: #0f172a;
@@ -50,6 +51,25 @@
       ::-webkit-scrollbar-thumb:hover {
         background: #475569; 
       }
+        /* ✅ Real-time Price Fluctuation Animations */
+  @keyframes flashUp {
+    0% { background-color: rgba(16, 185, 129, 0.3); } /* Emerald Green */
+    100% { background-color: transparent; }
+  }
+
+  @keyframes flashDown {
+    0% { background-color: rgba(244, 63, 94, 0.3); } /* Rose Red */
+    100% { background-color: transparent; }
+  }
+
+  /* These classes are used by the logic in WatchlistManager.tsx */
+  .flash-up {
+    animation: flashUp 0.8s ease-out forwards;
+  }
+
+  .flash-down {
+    animation: flashDown 0.8s ease-out forwards;
+  }
     </style>
   <script type="importmap">
 {
