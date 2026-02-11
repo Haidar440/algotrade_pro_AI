@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { AnalysisResult, LoadingStep, PaperTrade, View, BrokerState, SignalFeedItem, MarketIndices, Stock } from './types';
 import { INDIAN_STOCKS } from './services/stockData';
 import { streamer } from './services/streaming';
@@ -6,7 +6,8 @@ import { AngelOne } from './services/angel';
 import { TechnicalAnalysisEngine } from './services/technicalAnalysis';
 import { analyzeStockTicker, fetchMarketIndices } from './services/gemini';
 import { AutoTrader, AutoTraderConfig } from './services/autoTrader';
-// --- COMPONENTS ---
+
+// COMPONENTS
 import PaperTradingDashboard from './components/PaperTradingDashboard';
 import Sidebar from './components/Sidebar';
 import Navbar from './components/Navbar';
@@ -25,15 +26,31 @@ import AutoTraderDashboard from './components/AutoTraderDashboard';
 import { checkMarketStatus } from './utils/marketTime';
 import TradeHistory from './components/TradeHistory';
 import WatchlistManager from './components/WatchlistManager';
+import TradingChart from './components/TradingChart'; // ✅ Import Chart
+import TradingViewTicker from './components/TradingViewTicker';
 import { 
-  Activity, Search, AlertTriangle, Moon, Filter, RefreshCw, Lock, Zap, Briefcase, Bot
+  Activity, Search, AlertTriangle, Filter, RefreshCw, Lock, Zap, Briefcase, Bot
 } from 'lucide-react';
 
 const App: React.FC = () => {
+  // ✅ 1. POPUP MODE CHECK: If URL has params, render ONLY the chart
+  const queryParams = new URLSearchParams(window.location.search);
+  const chartSymbol = queryParams.get('chartSymbol');
+  const chartToken = queryParams.get('chartToken');
+
+  if (chartSymbol && chartToken) {
+    return (
+      <div className="h-screen w-screen bg-slate-950 overflow-hidden">
+        <TradingChart symbol={chartSymbol} token={chartToken} />
+      </div>
+    );
+  }
+
+  // --- STANDARD APP LOGIC BELOW ---
   const [currentView, setCurrentView] = useState<View>('SCANNER');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [autoTraderInstance, setAutoTraderInstance] = useState<AutoTrader | null>(null);
-  // --- STATE ---
+  
   const [paperTrades, setPaperTrades] = useState<PaperTrade[]>(() => {
     try { return JSON.parse(localStorage.getItem('algoTradePro_portfolio') || '[]'); } catch { return []; }
   });
@@ -55,10 +72,8 @@ const App: React.FC = () => {
   const [loadingStep, setLoadingStep] = useState<number>(0);
   const [isMarketOpen, setIsMarketOpen] = useState(false);
   const [marketIndices, setMarketIndices] = useState<MarketIndices | null>(null);
-  
-  // ... existing effects ...
 
-  // ✅ Initialize Global AutoTrader
+  // Initialize Global AutoTrader
   useEffect(() => {
     if (brokerState.angel && !autoTraderInstance) {
       console.log("🤖 Initializing Global Auto-Trader...");
@@ -74,22 +89,14 @@ const App: React.FC = () => {
     }
   }, [brokerState]);
 
-  // 2. Add this NEW useEffect
   useEffect(() => {
-    // Check immediately on load
     setIsMarketOpen(checkMarketStatus());
-
-    // Check every 1 minute
-    const interval = setInterval(() => {
-      setIsMarketOpen(checkMarketStatus());
-    }, 60000);
-
+    const interval = setInterval(() => { setIsMarketOpen(checkMarketStatus()); }, 60000);
     return () => clearInterval(interval);
   }, []);
-  const [isRefreshingWatchlist, setIsRefreshingWatchlist] = useState(false);
+
   const [signals, setSignals] = useState<SignalFeedItem[]>([]);
   const [filterType, setFilterType] = useState<string>('All');
-  
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [suggestions, setSuggestions] = useState<Stock[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -111,7 +118,6 @@ const App: React.FC = () => {
     });
   };
 
-  // --- ENGINE ---
   const scanFeaturedStocks = async () => {
     if (!brokerState.angel) return; 
     setScanning(true);
@@ -156,7 +162,6 @@ const App: React.FC = () => {
     finally { setScanning(false); }
   };
 
-  // --- EFFECTS ---
   useEffect(() => {
     if (!result || !brokerState.angel) return;
     let activeToken: string | null = null;
@@ -210,7 +215,6 @@ const App: React.FC = () => {
     return () => { document.removeEventListener("mousedown", handleClickOutside); };
   }, [wrapperRef]);
 
-  // --- HANDLERS ---
   const handleInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
     setTicker(value);
@@ -279,14 +283,6 @@ const App: React.FC = () => {
 
   const deletePaperTrade = (id: string) => { setPaperTrades(prev => prev.filter(t => t.id !== id)); };
   const addToWatchlist = (signal: SignalFeedItem) => { if (!watchlist.find(i => i.id === signal.id)) setWatchlist(prev => [signal, ...prev]); };
-  const removeFromWatchlist = (id: string) => { setWatchlist(prev => prev.filter(i => i.id !== id)); };
-  const refreshWatchlist = () => {
-    setIsRefreshingWatchlist(true);
-    setTimeout(() => {
-      setWatchlist(prev => prev.map(item => ({ ...item, price: item.price * (1 + (Math.random() - 0.5) * 0.01), changePercent: item.changePercent + (Math.random() - 0.5) * 0.2 })));
-      setIsRefreshingWatchlist(false);
-    }, 1000);
-  };
 
   const renderDashboardFeed = () => {
     const filteredSignals = signals.filter(s => {
@@ -336,20 +332,14 @@ const App: React.FC = () => {
   return (
     <div className="flex h-[100dvh] bg-[#0f172a] text-slate-200 font-sans selection:bg-emerald-500/30 overflow-hidden w-full">
       <SettingsModal isOpen={showSettingsModal} onClose={() => setShowSettingsModal(false)} brokerState={brokerState} onSaveBrokerState={setBrokerState} />
-
-      {/* ✅ FIXED SIDEBAR RENDERING: Removed 'hidden md:block' so it renders on mobile */}
       <Sidebar activeView={currentView} onSelectView={setCurrentView} isOpen={isSidebarOpen} onClose={() => setIsSidebarOpen(false)} />
 
-      {/* Main Content Area */}
       <div className="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative">
         <Navbar onMenuClick={() => setIsSidebarOpen(true)} activeView={currentView} onConnectClick={() => setShowSettingsModal(true)} isConnected={!!brokerState.angel} />
         
-        {currentView === 'SCANNER' && !result && <MarketStatusTicker isMarketOpen={isMarketOpen} indices={marketIndices} />}
-        
+        {currentView === 'SCANNER' && !result && <TradingViewTicker />}
         <main className="flex-1 overflow-y-auto overflow-x-hidden bg-slate-900/50 p-4 md:p-8 scroll-smooth w-full">
-          
           <div className="max-w-7xl mx-auto min-h-full pb-20">
-            {/* VIEW ROUTING */}
             {currentView === 'SCANNER' && (
               <div className="animate-in fade-in slide-in-from-bottom-2 duration-500">
                 {!result && (
@@ -372,22 +362,9 @@ const App: React.FC = () => {
                       )}
                   </div>
                 )}
-
-                {loading && (
-                  <div className="max-w-lg mx-auto mt-12 space-y-4">
-                    {steps.map((step, idx) => (
-                      <div key={step.id} className={`flex items-center gap-3 transition-opacity duration-500 ${idx <= loadingStep ? 'opacity-100' : 'opacity-30'}`}>
-                        {idx === loadingStep ? <div className="w-5 h-5 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin" /> : <div className="w-5 h-5 rounded-full border-2 border-slate-700" />}
-                        <span className={`font-mono text-sm ${idx === loadingStep ? 'text-emerald-400' : 'text-slate-400'}`}>{step.text}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
+                {loading && <div className="max-w-lg mx-auto mt-12 space-y-4">{steps.map((step, idx) => (<div key={step.id} className={`flex items-center gap-3 transition-opacity duration-500 ${idx <= loadingStep ? 'opacity-100' : 'opacity-30'}`}>{idx === loadingStep ? <div className="w-5 h-5 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin" /> : <div className="w-5 h-5 rounded-full border-2 border-slate-700" />}<span className={`font-mono text-sm ${idx === loadingStep ? 'text-emerald-400' : 'text-slate-400'}`}>{step.text}</span></div>))}</div>}
                 {error && <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-xl flex items-center gap-3 text-rose-200 mb-8"><AlertTriangle className="w-6 h-6 shrink-0" /><p>{error}</p><button onClick={() => setShowSettingsModal(true)} className="ml-auto bg-rose-500/20 hover:bg-rose-500/30 px-3 py-1 rounded text-xs font-bold">Settings</button></div>}
-
                 {!result && !loading && renderDashboardFeed()}
-
                 {result && !loading && (
                   <StockDetailView 
                     result={result} livePrice={livePrice} isMarketOpen={isMarketOpen} onRefresh={handleRefresh} onBack={() => setResult(null)} brokerState={brokerState} onPaperTrade={executePaperTrade} onPriceEdit={handleManualPriceUpdate} isInWatchlist={watchlist.some(w => w.symbol === result.symbol)}
@@ -399,42 +376,21 @@ const App: React.FC = () => {
                 )}
               </div>
             )}
-              {currentView === 'WATCHLIST' && (
+            
+            {/* ✅ UPDATED WATCHLIST VIEW (Standard full width, no chart here) */}
+            {currentView === 'WATCHLIST' && (
               <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-                  {/* Make sure runAnalysis is defined in your App.tsx 
-                    and brokerState is the state object holding your Angel tokens 
-                  */}
                   <WatchlistManager 
                       onAnalyze={runAnalysis} 
                       brokerState={brokerState} 
                   />
               </div>
             )}
-            {currentView === 'REAL_PORTFOLIO' && (
-              <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-                  <h2 className="text-2xl font-bold text-white mb-6 flex items-center gap-2"><Briefcase className="w-6 h-6 text-blue-400" /> Angel One Portfolio</h2>
-                  <RealPortfolio brokerState={brokerState} />
-              </div>
-            )}
 
-            {currentView === 'PAPER_TRADING' && (
-              <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-                  <h2 className="text-2xl font-bold text-white mb-6 flex items-center gap-2"><Activity className="w-6 h-6 text-purple-400" /> Paper Trading Simulator</h2>
-                  <PaperTradingDashboard trades={paperTrades} onCloseTrade={closePaperTrade} onDeleteTrade={deletePaperTrade} brokerState={brokerState} />
-              </div>
-            )}
-
-            {currentView === 'AUTO_TRADER' && (
-              <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-                  <h2 className="text-2xl font-bold text-white mb-6 flex items-center gap-2"><Bot className="w-6 h-6 text-amber-500" /> Algorithmic Trading Engine</h2>
-                  <AutoTraderDashboard brokerState={brokerState} existingTrader={autoTraderInstance} />
-              </div>
-            )}
-            {currentView === 'TRADE_HISTORY' && (
-  <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <TradeHistory brokerState={brokerState} />
-  </div>
-)}
+            {currentView === 'REAL_PORTFOLIO' && <div className="animate-in fade-in slide-in-from-bottom-4 duration-500"><h2 className="text-2xl font-bold text-white mb-6 flex items-center gap-2"><Briefcase className="w-6 h-6 text-blue-400" /> Angel One Portfolio</h2><RealPortfolio brokerState={brokerState} /></div>}
+            {currentView === 'PAPER_TRADING' && <div className="animate-in fade-in slide-in-from-bottom-4 duration-500"><h2 className="text-2xl font-bold text-white mb-6 flex items-center gap-2"><Activity className="w-6 h-6 text-purple-400" /> Paper Trading Simulator</h2><PaperTradingDashboard trades={paperTrades} onCloseTrade={closePaperTrade} onDeleteTrade={deletePaperTrade} brokerState={brokerState} /></div>}
+            {currentView === 'AUTO_TRADER' && <div className="animate-in fade-in slide-in-from-bottom-4 duration-500"><h2 className="text-2xl font-bold text-white mb-6 flex items-center gap-2"><Bot className="w-6 h-6 text-amber-500" /> Algorithmic Trading Engine</h2><AutoTraderDashboard brokerState={brokerState} existingTrader={autoTraderInstance} /></div>}
+            {currentView === 'TRADE_HISTORY' && <div className="animate-in fade-in slide-in-from-bottom-4 duration-500"><TradeHistory brokerState={brokerState} /></div>}
             {currentView === 'NEWS' && <div className="h-full"><NewsAnalysisDashboard /></div>}
             {currentView === 'BACKTEST' && <BacktestDashboard brokerState={brokerState} />}
             {currentView === 'STRATEGIES' && <StrategyGuide />}
